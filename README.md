@@ -4,7 +4,7 @@
 
 # LOGEN (**Lo**calization **Gen**erator)
 
-![Version](https://img.shields.io/badge/latest_version-2.0.2-blueviolet)
+![Version](https://img.shields.io/badge/latest_version-2.0.3-blueviolet)
 [![Python Version](https://img.shields.io/badge/python-3.9-blue)](https://www.python.org/downloads/release/python-390/)
 ![Swift Version](https://img.shields.io/badge/swift-5+-yellow)
 ![SPM](https://img.shields.io/badge/SwiftPM-supported-green)
