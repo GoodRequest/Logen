@@ -58,8 +58,8 @@ Hit *Cmd+S* and you should see Xcode starting to fetch the package for you. Wait
 
 4. Copy and paste this script (also remove two wild `#`, those are there only to prevent Bitbucket from obliterating the formatting of this readme):
 ```shell
-SCRIPT_PATH="${BUILD_DIR%/Build/*}/SourcePackages/checkouts/logen_ios/logen2.py"
-CREDS="${BUILD_DIR%/Build/*}/SourcePackages/checkouts/logen_ios/credentials.json"
+SCRIPT_PATH="${BUILD_DIR%/Build/*}/SourcePackages/checkouts/Logen/logen2.py"
+CREDS="${BUILD_DIR%/Build/*}/SourcePackages/checkouts/Logen/credentials.json"
 TOKEN="${PROJECT_DIR}/logen2_token.json"
 #
 GOOGLE_SHEETS_ID="SHEET ID HERE"
