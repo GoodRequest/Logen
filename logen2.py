@@ -5,6 +5,58 @@ import argparse
 import re
 import html
 
+# - Classes
+
+class Translation:
+    def __init__(self, type, translation):
+        self.type = type
+        self.translation = translation
+
+    def output(self):
+        return """<key>{}</key>
+        <string>{}</string>""".format(self.type, self.translation)
+
+
+class Variable:
+    def __init__(self, key, translations):
+        self.key = key
+        self.translations = translations
+
+    def string_of_translations(self, translation):
+        return translation.output()
+    
+    def output(self):
+        list_of_transalations_strings = map(self.string_of_translations, list(self.translations))
+        joined_strings = "\n".join(list_of_transalations_strings)
+        return """<key>{}</key>
+             <dict>
+                 <key>NSStringFormatSpecTypeKey</key>
+                 <string>NSStringPluralRuleType</string>
+                 <key>NSStringFormatValueTypeKey</key>
+                 <string>d</string>
+                 {}
+             </dict>""".format(self.key, joined_strings)
+
+class LocalizedString:
+    def __init__(self, key, string, variables):
+        self.key = key
+        self.string = string
+        self.variables = variables
+
+    def string_of_variables(self, variables):
+        return variables.output()
+
+    def output(self):
+        list_of_transalations_strings = map(self.string_of_variables, list(self.variables))
+        joined_strings = "\n".join(list_of_transalations_strings)
+        value = """<key>{}</key>
+         <dict>
+             <key>NSStringLocalizedFormatKey</key>
+             <string>{}</string>
+             {}
+         </dict>"""
+        return value.format(self.key, self.string, joined_strings)
+
 # - Ensure Google APIs are installed via PIP
 
 def import_google_apis(firstAttempt):
@@ -116,6 +168,7 @@ def generate_strings(spreadsheet, language):
 
     empty_string = ""
     list_of_strings = []
+    pluralized_rows = []
 
     for row in spreadsheet:
         try:
@@ -123,6 +176,9 @@ def generate_strings(spreadsheet, language):
                 continue
             else:
                 key = row[ios_column_index]
+                if "(pluralized)" in key:
+                    pluralized_rows.append(row)
+
                 translation = fix_special_substrings(row[language_column_index])
                 localized_entry = as_localized_entry(key, translation)
                 list_of_strings.append(localized_entry)
@@ -130,7 +186,89 @@ def generate_strings(spreadsheet, language):
         except IndexError:
             continue
 
-    return list_of_strings
+    pluralized_strings = create_pluralized_file(pluralized_rows, language_column_index, ios_column_index)
+    return list_of_strings, pluralized_strings
+
+def create_pluralized_file(rows, language_index, ios_column_index):
+    pluralized_keys = []
+    localized_strings = []
+    for index, row in enumerate(rows):
+        pluralized_keys.append(row[ios_column_index])
+        rows.pop(index)
+
+    print(rows)
+    print(language_index)
+    print(ios_column_index)
+
+    for pluralized_key in pluralized_keys:
+        localized_string = ""
+        variables = []
+        for row in rows:
+            key = row[ios_column_index]
+            if pluralized_key in key:
+                for index, variable in enumerate(separate_strings(row[language_index])):
+                    if "%" in variable:
+                        localized_string = localized_string + "%@variable{}@".format(index)
+                        variables.append(Variable("%@variable{}@".format(index), extract_pluralized_translations(variable)))
+                    else:
+                        localized_string = localized_string + variable
+
+        localized_strings.append(LocalizedString(pluralized_key.replace("(pluralized)", ""), localized_string, variables))
+
+    return localized_strings
+
+# - Separate string for pluralized string 
+
+def separate_strings(input_string):
+    # Define a regular expression pattern to capture substrings around '%[0-9]+\$@'
+    pattern = r'([^%]*)(%[0-9]+\$@[^%]*)'
+
+    # Use re.split to split the input string around the specified pattern
+    result = re.split(pattern, input_string)
+
+    # Remove empty strings from the result
+    result = [segment for segment in result if segment]
+
+    return result
+
+# - Extract translations from pluralized string
+
+def extract_pluralized_translations(input_string):
+    translations = []
+
+    # Continue loop as long as there are pairs of tags
+    while "<" in input_string and ">" in input_string:
+        # Find the opening tag
+        start_index = input_string.find("<")
+        # Find the closing tag
+        end_index = input_string.find(">")
+
+        if start_index != -1 and end_index != -1:
+            # Extract the tag content
+            tag = input_string[start_index + 1:end_index]
+
+            # Check if the tag is a valid pluralization tag
+            if tag in ["one", "two", "few", "many", "other", "zero"]:
+                # Find the opening tag of the translation content
+                translation_start = input_string.find("<{}>".format(tag))
+                # Find the closing tag of the translation content
+                translation_end = input_string.find("</{}>".format(tag))
+
+                if translation_start != -1 and translation_end != -1:
+                    # Extract the translation content
+                    translation = input_string[:start_index] + input_string[translation_start + len(tag) + 2:translation_end]
+
+                    # Append the translation to the list
+                    translations.append(Translation(tag, translation))
+
+                    # Modify input_string to remove the current translation tag pair
+                    input_string = input_string[:start_index] + input_string[translation_end + len(tag) + 3:]
+
+    if not translations:
+        # Default to 'other' if no specific pluralization tag is found
+        translations.append(Translation("other", input_string))
+
+    return translations
 
 # - Fix escapes and substrings
 
@@ -155,15 +293,17 @@ def fix_special_substrings(string):
             string.count(s_substring)
         )
 
+    string
+
     string = html.unescape(string)
 
     return string
 
 def as_localized_entry(key, translation):
-    return "\"{}\" = \"{}\";".format(key, translation)
+    return "\"{}\" = \"{}\";".format(key.replace("(pluralized)", ""), translation)
 
 def save_strings(strings, language):
-    file_path = prepare_path(language)
+    file_path = prepare_path(language, False)
     if file_path:
         with open(file_path, "w") as output_file:
             output_file.write("/*\n * Generated by Logen v2\n")
@@ -176,12 +316,34 @@ def save_strings(strings, language):
     else:
         print("⚠️ Localization file not found - {} ⚠️".format(language))
 
-def prepare_path(language):
+def output_localized_plurals(value):
+    return value.output()
+
+def save_pluralized_strings(strings, language):
+    file_path = prepare_path(language, True)
+    mapped_values = map(lambda value: value.output(), list(strings))
+    output = """<?xml version="1.0" encoding="UTF-8"?>
+    <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+    <plist version="1.0">
+    <dict>
+    {}
+    </dict>
+    </plist>""".format("\n".join(mapped_values))
+
+    if file_path:
+        with open(file_path, "w+") as output_file:
+            output_file.write(output)
+
+    else:
+        print("⚠️ Output language file not found - {} ⚠️".format(language))
+
+def prepare_path(language, isPluralizedFile):
     root_dir = os.path.abspath(os.curdir)
-    path = "/{}/{}/{}/Localizable.strings".format(
+    path = "/{}/{}/{}/Localizable.{}".format(
         PROJECT_NAME,
         LOCALIZATION_PATH,
-        "{}.lproj".format(language.lower())
+        "{}.lproj".format(language.lower()),
+        "stringsdict" if isPluralizedFile else "strings"
     )
     print("ℹ️ Preparing localization file - {}".format(root_dir + path))
     if os.path.exists(root_dir + path):
@@ -248,7 +410,8 @@ if __name__ == "__main__":
     spreadsheet = authorize_and_get_spreadsheet()
     languages = get_languages(spreadsheet)
     for language in languages:
-        strings = generate_strings(spreadsheet, language)
+        strings, pluralizedStrings = generate_strings(spreadsheet, language)
+        save_pluralized_strings(pluralizedStrings, language)
         save_strings(strings, language)
 
     print_success_message(languages)
