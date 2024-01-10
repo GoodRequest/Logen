@@ -190,31 +190,19 @@ def generate_strings(spreadsheet, language):
     return list_of_strings, pluralized_strings
 
 def create_pluralized_file(rows, language_index, ios_column_index):
-    pluralized_keys = []
     localized_strings = []
-    for index, row in enumerate(rows):
-        pluralized_keys.append(row[ios_column_index])
-        rows.pop(index)
-
-    print(rows)
-    print(language_index)
-    print(ios_column_index)
-
-    for pluralized_key in pluralized_keys:
+    key = ""
+    for row in rows:
         localized_string = ""
         variables = []
-        for row in rows:
-            key = row[ios_column_index]
-            if pluralized_key in key:
-                for index, variable in enumerate(separate_strings(row[language_index])):
-                    if "%" in variable:
-                        localized_string = localized_string + "%@variable{}@".format(index)
-                        variables.append(Variable("%@variable{}@".format(index), extract_pluralized_translations(variable)))
-                    else:
-                        localized_string = localized_string + variable
-
-        localized_strings.append(LocalizedString(pluralized_key.replace("(pluralized)", ""), localized_string, variables))
-
+        key = row[ios_column_index]
+        for index, variable in enumerate(separate_strings(row[language_index])):
+            if "%" in variable:
+                localized_string = localized_string + "%#@variable{}@".format(index)
+                variables.append(Variable("variable{}".format(index), extract_pluralized_translations(variable)))
+            else:
+                localized_string = localized_string + variable
+        localized_strings.append(LocalizedString(key.replace("(pluralized)", ""), localized_string, variables))
     return localized_strings
 
 # - Separate string for pluralized string 
