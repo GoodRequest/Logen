@@ -209,7 +209,7 @@ def create_pluralized_file(rows, language_index, ios_column_index):
 
 def separate_strings(input_string):
     # Define a regular expression pattern to capture substrings around '%[0-9]+\$@'
-    pattern = r'([^%]*)(%[0-9]+\$@[^%]*)'
+    pattern = r'([^%]*)(%[0-9]*\$*[@dDuUxXoOfeEgGcCsSpaAF][^%]*)'
 
     # Use re.split to split the input string around the specified pattern
     result = re.split(pattern, input_string)
@@ -281,8 +281,6 @@ def fix_special_substrings(string):
             string.count(s_substring)
         )
 
-    string
-
     string = html.unescape(string)
 
     return string
@@ -303,9 +301,6 @@ def save_strings(strings, language):
 
     else:
         print("⚠️ Localization file not found - {} ⚠️".format(language))
-
-def output_localized_plurals(value):
-    return value.output()
 
 def save_pluralized_strings(strings, language):
     file_path = prepare_path(language, True)
