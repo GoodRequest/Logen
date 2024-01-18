@@ -78,7 +78,7 @@ def import_google_apis(firstAttempt):
         if firstAttempt:
             import_google_apis(False)
         else:
-            print("❌ FAILED TO IMPORT GOOGLE APIS ❌")
+            print("error: FAILED TO IMPORT GOOGLE APIS ❌")
             sys.exit(1)
 
 
@@ -139,13 +139,13 @@ def authorize_and_get_spreadsheet():
         values = result.get("values", [])
 
         if not values:
-            print("❌ NO DATA FOUND IN RANGE IN SPREADSHEET ❌")
+            print("error: NO DATA FOUND IN RANGE IN SPREADSHEET ❌")
             exit()
 
         return values
 
     except HttpError as error:
-        print("❌ HTTP error:", error, "❌")
+        print("error: ", error, "❌")
         exit()
 
 # - Localization generator
