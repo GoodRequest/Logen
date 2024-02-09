@@ -442,11 +442,14 @@ if __name__ == "__main__":
     languages = get_languages(spreadsheet)
     for language in languages:
         strings, pluralizedStrings = generate_strings(spreadsheet, language)
-        save_pluralized_strings(pluralizedStrings, language)
+        if pluralizedStrings:
+            save_pluralized_strings(pluralizedStrings, language)
+
         save_strings(strings, language)
 
         special_strings = generate_special_strings(spreadsheet, language)
-        save_special_strings(special_strings, language)
+        if special_strings:
+            save_special_strings(special_strings, language)
 
     print_success_message(languages)
     sys.exit(0)

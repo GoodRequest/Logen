@@ -101,13 +101,10 @@ Generate your token file:
 1. Add the token file to `.gitignore`
 2. Enjoy your localizations!
 
-https://camo.githubusercontent.com/f3af82c1c4bcec9dcea7335d41292c7901db4069622100178900b4c5a571b166/68747470733a2f2f63756c746f667468657061727479706172726f742e636f6d2f666c6167732f68642f736c6f76616b6961706172726f742e676966
-
-https://camo.githubusercontent.com/2be10ec938aa524b8b1704431f26c61515076da2e900cf45ff07796fc7fe7c5c/68747470733a2f2f63756c746f667468657061727479706172726f742e636f6d2f666c6167732f68642f756e697465647374617465736f66616d6572696361706172726f742e676966
-
-https://camo.githubusercontent.com/4f0a767590d64d31ccf57e20173a1e0bd0cf9f3bc78c52638b1a86d9158039b1/68747470733a2f2f63756c746f667468657061727479706172726f742e636f6d2f666c6167732f68642f6765726d616e79706172726f742e676966
-
-https://camo.githubusercontent.com/840129dfacfbb387d4be08dd23327008c7136f99290622d1d7377682c306d521/68747470733a2f2f63756c746f667468657061727479706172726f742e636f6d2f666c6167732f68642f737061696e706172726f742e676966
+![Slovak parrot](https://cultofthepartyparrot.com/flags/hd/slovakiaparrot.gif)
+![USA parrot](https://cultofthepartyparrot.com/flags/hd/unitedstatesofamericaparrot.gif)
+![Deutscher papagei](https://cultofthepartyparrot.com/flags/hd/germanyparrot.gif)
+![Spain parrot](https://cultofthepartyparrot.com/flags/hd/spainparrot.gif)
 
 # How to use
 
