@@ -5,6 +5,58 @@ import argparse
 import re
 import html
 
+# - Classes
+
+class Translation:
+    def __init__(self, type, translation):
+        self.type = type
+        self.translation = translation
+
+    def output(self):
+        return """<key>{}</key>
+        <string>{}</string>""".format(self.type, self.translation)
+
+
+class Variable:
+    def __init__(self, key, translations):
+        self.key = key
+        self.translations = translations
+
+    def string_of_translations(self, translation):
+        return translation.output()
+    
+    def output(self):
+        list_of_transalations_strings = map(self.string_of_translations, list(self.translations))
+        joined_strings = "\n".join(list_of_transalations_strings)
+        return """<key>{}</key>
+             <dict>
+                 <key>NSStringFormatSpecTypeKey</key>
+                 <string>NSStringPluralRuleType</string>
+                 <key>NSStringFormatValueTypeKey</key>
+                 <string>d</string>
+                 {}
+             </dict>""".format(self.key, joined_strings)
+
+class LocalizedString:
+    def __init__(self, key, string, variables):
+        self.key = key
+        self.string = string
+        self.variables = variables
+
+    def string_of_variables(self, variables):
+        return variables.output()
+
+    def output(self):
+        list_of_transalations_strings = map(self.string_of_variables, list(self.variables))
+        joined_strings = "\n".join(list_of_transalations_strings)
+        value = """<key>{}</key>
+         <dict>
+             <key>NSStringLocalizedFormatKey</key>
+             <string>{}</string>
+             {}
+         </dict>"""
+        return value.format(self.key, self.string, joined_strings)
+
 # - Ensure Google APIs are installed via PIP
 
 def import_google_apis(firstAttempt):
@@ -26,7 +78,7 @@ def import_google_apis(firstAttempt):
         if firstAttempt:
             import_google_apis(False)
         else:
-            print("❌ FAILED TO IMPORT GOOGLE APIS ❌")
+            print("error: FAILED TO IMPORT GOOGLE APIS ❌")
             sys.exit(1)
 
 
@@ -87,13 +139,13 @@ def authorize_and_get_spreadsheet():
         values = result.get("values", [])
 
         if not values:
-            print("❌ NO DATA FOUND IN RANGE IN SPREADSHEET ❌")
+            print("error: NO DATA FOUND IN RANGE IN SPREADSHEET ❌")
             exit()
 
         return values
 
     except HttpError as error:
-        print("❌ HTTP error:", error, "❌")
+        print("error: ", error, "❌")
         exit()
 
 # - Localization generator
@@ -114,8 +166,8 @@ def generate_strings(spreadsheet, language):
 
     language_column_index = spreadsheet[0].index(language)
 
-    empty_string = ""
     list_of_strings = []
+    pluralized_rows = []
 
     for row in spreadsheet:
         try:
@@ -123,6 +175,9 @@ def generate_strings(spreadsheet, language):
                 continue
             else:
                 key = row[ios_column_index]
+                if "(pluralized)" in key:
+                    pluralized_rows.append(row)
+
                 translation = fix_special_substrings(row[language_column_index])
                 localized_entry = as_localized_entry(key, translation)
                 list_of_strings.append(localized_entry)
@@ -130,7 +185,107 @@ def generate_strings(spreadsheet, language):
         except IndexError:
             continue
 
-    return list_of_strings
+    pluralized_strings = create_pluralized_file(pluralized_rows, language_column_index, ios_column_index)
+    return list_of_strings, pluralized_strings
+
+def generate_special_strings(spreadsheet, language):
+    ios_column_name = "iOS"
+    ios_column_first_match = [header for header in spreadsheet[0] if ios_column_name in header][0]
+    ios_column_index = spreadsheet[0].index(ios_column_first_match)
+
+    language_column_index = spreadsheet[0].index(language)
+
+    dict_of_special_strings = dict()
+
+    for row in spreadsheet:
+        try:
+            if not row[ios_column_index]:
+                continue
+            else:
+                key = row[ios_column_index]
+                if "(" in key and "(pluralized)" not in key:
+                    file_name = key[key.find("(") + 1:key.find(")")]
+                    translation = fix_special_substrings(row[language_column_index])
+                    localized_entry = as_special_localized_entry(key, file_name, translation)
+
+                    if file_name in dict_of_special_strings:
+                        dict_of_special_strings.get(file_name).append(localized_entry)
+                    else:
+                        dict_of_special_strings.update({file_name : [localized_entry]})
+
+        except IndexError:
+            continue
+
+    return dict_of_special_strings
+
+def create_pluralized_file(rows, language_index, ios_column_index):
+    localized_strings = []
+    key = ""
+    for row in rows:
+        localized_string = ""
+        variables = []
+        key = row[ios_column_index]
+        for index, variable in enumerate(separate_strings(row[language_index])):
+            if "%" in variable:
+                localized_string = localized_string + "%#@variable{}@".format(index)
+                variables.append(Variable("variable{}".format(index), extract_pluralized_translations(variable)))
+            else:
+                localized_string = localized_string + variable
+        localized_strings.append(LocalizedString(key.replace("(pluralized)", ""), localized_string, variables))
+    return localized_strings
+
+# - Separate string for pluralized string 
+
+def separate_strings(input_string):
+    # Define a regular expression pattern to capture substrings around '%[0-9]+\$@'
+    pattern = r'([^%]*)(%[0-9]*\$*[@dDuUxXoOfeEgGcCsSpaAF][^%]*)'
+
+    # Use re.split to split the input string around the specified pattern
+    result = re.split(pattern, input_string)
+
+    # Remove empty strings from the result
+    result = [segment for segment in result if segment]
+
+    return result
+
+# - Extract translations from pluralized string
+
+def extract_pluralized_translations(input_string):
+    translations = []
+
+    # Continue loop as long as there are pairs of tags
+    while "<" in input_string and ">" in input_string:
+        # Find the opening tag
+        start_index = input_string.find("<")
+        # Find the closing tag
+        end_index = input_string.find(">")
+
+        if start_index != -1 and end_index != -1:
+            # Extract the tag content
+            tag = input_string[start_index + 1:end_index]
+
+            # Check if the tag is a valid pluralization tag
+            if tag in ["one", "two", "few", "many", "other", "zero"]:
+                # Find the opening tag of the translation content
+                translation_start = input_string.find("<{}>".format(tag))
+                # Find the closing tag of the translation content
+                translation_end = input_string.find("</{}>".format(tag))
+
+                if translation_start != -1 and translation_end != -1:
+                    # Extract the translation content
+                    translation = input_string[:start_index] + input_string[translation_start + len(tag) + 2:translation_end]
+
+                    # Append the translation to the list
+                    translations.append(Translation(tag, translation))
+
+                    # Modify input_string to remove the current translation tag pair
+                    input_string = input_string[:start_index] + input_string[translation_end + len(tag) + 3:]
+
+    if not translations:
+        # Default to 'other' if no specific pluralization tag is found
+        translations.append(Translation("other", input_string))
+
+    return translations
 
 # - Fix escapes and substrings
 
@@ -160,10 +315,13 @@ def fix_special_substrings(string):
     return string
 
 def as_localized_entry(key, translation):
-    return "\"{}\" = \"{}\";".format(key, translation)
+    return "\"{}\" = \"{}\";".format(key.replace("(pluralized)", ""), translation)
+
+def as_special_localized_entry(key, file_name, translation):
+    return "{} = \"{}\";".format(key.replace("({})".format(file_name), ""), translation)
 
 def save_strings(strings, language):
-    file_path = prepare_path(language)
+    file_path = prepare_path(language, False)
     if file_path:
         with open(file_path, "w") as output_file:
             output_file.write("/*\n * Generated by Logen v2\n")
@@ -176,12 +334,47 @@ def save_strings(strings, language):
     else:
         print("⚠️ Localization file not found - {} ⚠️".format(language))
 
-def prepare_path(language):
+def save_pluralized_strings(strings, language):
+    file_path = prepare_path(language, True)
+    mapped_values = map(lambda value: value.output(), list(strings))
+    output = """<?xml version="1.0" encoding="UTF-8"?>
+    <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+    <plist version="1.0">
+    <dict>
+    {}
+    </dict>
+    </plist>""".format("\n".join(mapped_values))
+
+    if file_path:
+        with open(file_path, "w+") as output_file:
+            output_file.write(output)
+
+    else:
+        print("⚠️ Output language file not found - {} ⚠️".format(language))
+
+def save_special_strings(strings, language):
+    for file_name in strings: 
+        file_path = prepare_path(language, False, file_name)
+        if file_path:
+            with open(file_path, "w") as output_file:
+                output_file.write("/*\n * Generated by Logen v2\n")
+                output_file.write(" */\n\n")
+
+                for line in strings.get(file_name):
+                    output_file.write(line)
+                    output_file.write("\n")
+
+        else:
+            print("⚠️ Localization file not found - {} ⚠️".format(language))
+
+def prepare_path(language, isPluralizedFile, fileName = "Localizable"):
     root_dir = os.path.abspath(os.curdir)
-    path = "/{}/{}/{}/Localizable.strings".format(
+    path = "/{}/{}/{}/{}.{}".format(
         PROJECT_NAME,
         LOCALIZATION_PATH,
-        "{}.lproj".format(language.lower())
+        "{}.lproj".format(language.lower()),
+        fileName,
+        "stringsdict" if isPluralizedFile else "strings"
     )
     print("ℹ️ Preparing localization file - {}".format(root_dir + path))
     if os.path.exists(root_dir + path):
@@ -248,8 +441,15 @@ if __name__ == "__main__":
     spreadsheet = authorize_and_get_spreadsheet()
     languages = get_languages(spreadsheet)
     for language in languages:
-        strings = generate_strings(spreadsheet, language)
+        strings, pluralizedStrings = generate_strings(spreadsheet, language)
+        if pluralizedStrings:
+            save_pluralized_strings(pluralizedStrings, language)
+
         save_strings(strings, language)
+
+        special_strings = generate_special_strings(spreadsheet, language)
+        if special_strings:
+            save_special_strings(special_strings, language)
 
     print_success_message(languages)
     sys.exit(0)
