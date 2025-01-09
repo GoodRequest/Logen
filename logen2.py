@@ -369,6 +369,7 @@ def save_special_strings(strings, language):
 
 def prepare_path(language, isPluralizedFile, fileName = "Localizable"):
     root_dir = os.path.abspath(os.curdir)
+    fileName = fileName if fileName else FILENAME
     path = "/{}/{}/{}/{}.{}".format(
         PROJECT_NAME,
         LOCALIZATION_PATH,
@@ -398,6 +399,8 @@ def parse_arguments():
     parser.add_argument("--credentials", required=False)
     parser.add_argument("--first_row", required=False)
     parser.add_argument("--localization_path", required=False)
+    parser.add_argument("--filename", required=False, default="Localizable")
+
     arguments = parser.parse_args()
 
     global SPREADSHEET_ID
@@ -406,9 +409,11 @@ def parse_arguments():
     global TOKEN_FILE
     global CREDENTIALS_FILE
     global LOCALIZATION_PATH
+    global FILENAME
 
     SPREADSHEET_ID = arguments.id
     PROJECT_NAME = arguments.project
+    FILENAME = arguments.filename
 
     if arguments.first_row:
         RANGE = "'{}'!A{}:{}".format(
