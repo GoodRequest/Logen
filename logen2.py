@@ -367,7 +367,7 @@ def save_special_strings(strings, language):
         else:
             print("⚠️ Localization file not found - {} ⚠️".format(language))
 
-def prepare_path(language, isPluralizedFile, fileName = "Localizable"):
+def prepare_path(language, isPluralizedFile, fileName):
     root_dir = os.path.abspath(os.curdir)
     fileName = fileName if fileName else FILENAME
     path = "/{}/{}/{}/{}.{}".format(
