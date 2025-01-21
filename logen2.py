@@ -115,6 +115,9 @@ def authorize_and_get_spreadsheet():
     credentials = None
     if os.path.exists(TOKEN_FILE):
         credentials = Credentials.from_authorized_user_file(TOKEN_FILE, SCOPE)
+    else:
+        print("error: Google API token not found - specified token file path is invalid")
+        sys.exit(1)
 
     if not credentials or not credentials.valid:
         if credentials and credentials.expired and credentials.refresh_token:
@@ -139,13 +142,13 @@ def authorize_and_get_spreadsheet():
         values = result.get("values", [])
 
         if not values:
-            print("error: NO DATA FOUND IN RANGE IN SPREADSHEET ❌")
-            exit()
+            print("error: Spreadsheet does not contain valid values")
+            sys.exit(1)
 
         return values
 
     except HttpError as error:
-        print("error: ", error, "❌")
+        print("error: ", error)
         exit()
 
 # - Localization generator
@@ -156,6 +159,9 @@ def get_languages(spreadsheet):
     for header in headers:
         if len(header) == 2:
             languages.append(header)
+        else:
+            print("error: Unrecognized language code - {}. Language code must be 2 characters long.".format(header))
+            sys.exit(1)
 
     return languages
 
@@ -183,6 +189,7 @@ def generate_strings(spreadsheet, language):
                 list_of_strings.append(localized_entry)
 
         except IndexError:
+            print("warning: IndexError generating strings for language {}".format(language))
             continue
 
     pluralized_strings = create_pluralized_file(pluralized_rows, language_column_index, ios_column_index)
@@ -214,6 +221,7 @@ def generate_special_strings(spreadsheet, language):
                         dict_of_special_strings.update({file_name : [localized_entry]})
 
         except IndexError:
+            print("warning: IndexError generating strings for language {}".format(language))
             continue
 
     return dict_of_special_strings
@@ -332,7 +340,7 @@ def save_strings(strings, language):
                 output_file.write("\n")
 
     else:
-        print("⚠️ Localization file not found - {} ⚠️".format(language))
+        print("error: Strings file not found - {} - {}".format(language, file_path))
 
 def save_pluralized_strings(strings, language):
     file_path = prepare_path(language, True, FILENAME)
@@ -350,7 +358,7 @@ def save_pluralized_strings(strings, language):
             output_file.write(output)
 
     else:
-        print("⚠️ Output language file not found - {} ⚠️".format(language))
+        print("error: Stringsdict file not found - {} - {}".format(language, file_path))
 
 def save_special_strings(strings, language):
     for file_name in strings: 
@@ -365,7 +373,7 @@ def save_special_strings(strings, language):
                     output_file.write("\n")
 
         else:
-            print("⚠️ Localization file not found - {} ⚠️".format(language))
+            print("error: Strings file not found - {} - {}".format(language, file_path))
 
 def prepare_path(language, isPluralizedFile, fileName):
     root_dir = os.path.abspath(os.curdir)
@@ -376,14 +384,15 @@ def prepare_path(language, isPluralizedFile, fileName):
         fileName,
         "stringsdict" if isPluralizedFile else "strings"
     )
-    print("ℹ️ Preparing localization file - {}".format(root_dir + path))
+    print("Preparing path for localization file: {}".format(root_dir + path))
     if os.path.exists(root_dir + path):
         return root_dir + path
     else:
+        print("warning: No file exists @ {}".format(root_dir + path))
         return None
 
 def print_success_message(languages):
-    print("✅ Generated strings for {} language(s):".format(len(languages)))
+    print("Generated strings for {} language(s):".format(len(languages)))
     for language in languages:
         print("    - {}".format(language))
 
@@ -415,24 +424,31 @@ def parse_arguments():
     FILENAME = arguments.filename
 
     if arguments.first_row:
+        print("Using sheet {}".format(arguments.sheet))
+        print("Using custom range - A{}:{}".format(arguments.first_row, arguments.last_column))
         RANGE = "'{}'!A{}:{}".format(
             arguments.sheet,
             arguments.first_row,
             arguments.last_column
         )
     else:
+        print("Using sheet {}".format(arguments.sheet))
+        print("Using default range - A1:{}".format(arguments.last_column))
         RANGE = "'{}'!A1:{}".format(
             arguments.sheet,
             arguments.last_column
         )
 
     if arguments.token:
+        print("Specified existing token file path")
         TOKEN_FILE = arguments.token
 
     if arguments.credentials:
+        print("Specified existing credentials file path")
         CREDENTIALS_FILE = arguments.credentials
 
     if arguments.localization_path:
+        print("Specified custom export path - {}".format(arguments.localization_path))
         LOCALIZATION_PATH = arguments.localization_path
 
 # - Main
