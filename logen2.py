@@ -4,6 +4,7 @@ import os.path
 import argparse
 import re
 import html
+import xml.etree.ElementTree as ET
 
 # - Classes
 
@@ -18,17 +19,26 @@ class Translation:
 
 
 class Variable:
-    def __init__(self, key, translations):
+    def __init__(self,row, key, translations):
+        self.row = row
         self.key = key
         self.translations = translations
 
     def string_of_translations(self, translation):
         return translation.output()
-    
+
+    def validate_output(self, output):
+        try:
+            ET.fromstring(f"<root>{output}</root>")
+        except:
+            raise ValueError(f"Invalid syntax of Variable: {self.row}")
+
+        return True
+
     def output(self):
         list_of_transalations_strings = map(self.string_of_translations, list(self.translations))
         joined_strings = "\n".join(list_of_transalations_strings)
-        return """<key>{}</key>
+        final_output = """<key>{}</key>
              <dict>
                  <key>NSStringFormatSpecTypeKey</key>
                  <string>NSStringPluralRuleType</string>
@@ -36,6 +46,10 @@ class Variable:
                  <string>d</string>
                  {}
              </dict>""".format(self.key, joined_strings)
+
+        self.validate_output(final_output)
+
+        return final_output
 
 class LocalizedString:
     def __init__(self, key, string, variables):
@@ -233,7 +247,7 @@ def create_pluralized_file(rows, language_index, ios_column_index):
         for index, variable in enumerate(separate_strings(row[language_index])):
             if "%" in variable:
                 localized_string = localized_string + "%#@variable{}@".format(index)
-                variables.append(Variable("variable{}".format(index), extract_pluralized_translations(variable)))
+                variables.append(Variable(row, "variable{}".format(index), extract_pluralized_translations(variable)))
             else:
                 localized_string = localized_string + variable
         localized_strings.append(LocalizedString(key.replace("(pluralized)", ""), localized_string, variables))
@@ -258,37 +272,55 @@ def separate_strings(input_string):
 def extract_pluralized_translations(input_string):
     translations = []
 
-    # Continue loop as long as there are pairs of tags
-    while "<" in input_string and ">" in input_string:
-        # Find the opening tag
-        start_index = input_string.find("<")
-        # Find the closing tag
-        end_index = input_string.find(">")
+    pattern = re.compile(r"(%\d*\$?d)?\s*(\{\{.*?\}\})(.*)")
+    plural_pattern = re.compile(r"(zero|one|two|few|many|other)\s*:([^|}]+)")
+    underscore_pattern = r"\s*_(?=[^_])"
+    dynamic_value_pattern = r"\$s"
 
-        if start_index != -1 and end_index != -1:
-            # Extract the tag content
-            tag = input_string[start_index + 1:end_index]
+    match = pattern.search(input_string)
 
-            # Check if the tag is a valid pluralization tag
-            if tag in ["one", "two", "few", "many", "other", "zero"]:
-                # Find the opening tag of the translation content
-                translation_start = input_string.find("<{}>".format(tag))
-                # Find the closing tag of the translation content
-                translation_end = input_string.find("</{}>".format(tag))
+    if match:
+        full_match = match.group(0)
+        dynamic_value = match.group(1)
+        closure = match.group(2)
+        text_after = match.group(3)
 
-                if translation_start != -1 and translation_end != -1:
-                    # Extract the translation content
-                    translation = input_string[:start_index] + input_string[translation_start + len(tag) + 2:translation_end]
+        for tag, text in plural_pattern.findall(closure):
+            final_text = ""
 
-                    # Append the translation to the list
-                    translations.append(Translation(tag, translation))
+            if re.search(underscore_pattern, text):
+                final_text = re.sub(r"_", "", text, count=1)
+            else:
+                new_text, replacements = re.subn(dynamic_value_pattern, dynamic_value, text)
+                if replacements > 0:
+                    final_text = new_text
+                else:
+                    final_text = f"{dynamic_value}{text}"
 
-                    # Modify input_string to remove the current translation tag pair
-                    input_string = input_string[:start_index] + input_string[translation_end + len(tag) + 3:]
+            final_text += text_after
+
+            translations.append(Translation(tag, final_text))
+    else:
+        translations = extract_pluralized_translations_deprecated(input_string)
 
     if not translations:
-        # Default to 'other' if no specific pluralization tag is found
         translations.append(Translation("other", input_string))
+
+    return translations
+
+# - ⚠️ Extract translations from pluralized string ⚠️ - DEPRECATED
+
+def extract_pluralized_translations_deprecated(input_string):
+    translations = []
+    pattern = re.compile(r"<(zero|one|two|few|many|other)>(\s*.*?\s*)</\1>")
+
+    base_text = re.split(pattern, input_string)[0]
+
+    for match in pattern.finditer(input_string):
+        tag, text = match.groups()
+
+        full_translation = base_text + text
+        translations.append(Translation(tag, full_translation))
 
     return translations
 
