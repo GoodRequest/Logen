@@ -47,7 +47,7 @@ which pip3
 Add Logen to your [Swift Build Tools' `Package.swift`](https://github.com/GoodRequest/Logen/blob/main/res/BuildToolsTutorial.md) via SwiftPM.
 
 ```
-.package(url: "git@bitbucket.org:GoodRequest/logen_ios.git", .upToNextMajor(from: "2.0.0"))
+.package(url: "git@github.com:GoodRequest/Logen.git", .upToNextMajor(from: "2.4.0"))
 ```
 
 Hit *Cmd+S* and you should see Xcode starting to fetch the package for you. Wait until all package dependencies are resolved.
@@ -158,27 +158,78 @@ let string2 = L.Test.Variable.rooftops(roofCount)
 
 To inform Logen that this localization should be treated as pluralized you will need to include (pluralized) tag somewhere in localization key - eg. `ios.pluralized_string(pluralized)`.
 
-### Variable naming
+## Syntax
 
-Every variable in a pluralized string must be numbered - refer to C-style string formatting:
+- **Dynamic values** are inserted using `%` and order `$` (e.g., `%1$@` for the first parameter as a string, `%2$d` for the second parameter as a number).
+- **Pluralization forms** are defined in curly brackets `{{...}}`, with individual plural categories separated by `|`.
+- **A dynamic value is prefixed to each form automatically**.
+- **Suppressing a value** can be done by adding an underscore `_` before the form.
+- **Placing the value in a specific position** is marked with `$s` (or `$0` for Swift-style).
+- **Spaces** can be added simply by inserting them before or after the form.
 
+## Variable Naming
+Every variable in a pluralized string must be numbered, following C-style string formatting:
+
+- `%1$d` is a string with only one variable.
+- `%1$d` is a string with `%2$d` variables.
+
+## Pluralized Tags Options
+Logen generates an entry in the `.stringsdict` file for every plural category, for each variable, defined in the localization entry.
+
+Supported plural categories depend on the language of the entry. Please refer to the [Unicode CLDR language rules documentation](https://unicode-org.github.io/cldr-staging/charts/latest/supplemental/language_plural_rules.html) for details on specific languages.
+
+Apple's documentation: [Localizing Strings That Contain Plurals](https://developer.apple.com/library/archive/documentation/MacOSX/Conceptual/BPInternational/Articles/PluralRules.html)
+
+### Formatting Syntax
+
+You define **plural categories** using curly brackets **`{{...}}`**, with **categories** separated by **`|`**. If plural categories are specified, a dynamic value is automatically prefixed to each of them.
+
+Example:
 ```
-%1$d is string with only one variable.
+%1$@ GB, %2$@. zóna, zbývá %3$d{{one: den | few: dní | other: dnů}}
 ```
 
+### Special Formatting Rules
+- To **suppress** the value before a plural category, prefix it with **`_`**:
 ```
-%1$d is string with %2$d variables.
+%1$@ %2$d{{zero:_píše | other:a ďalší píšu}}
 ```
 
-### Pluralized tags options
+- To **place the value at a specific position** within the form, use **`$s`**:
+```
+%1$@ %2$d{{zero:_píše| other:a ďalší $s píšu}}
+```
 
-Logen generates an entry in .stringsdict file for every plural category, for each variable, defined in the localization entry.
+- If **spacing is required**, simply include spaces **before** and **after** the pluralized part:
+```
+%1$@ %2$d{{zero: _píše | other: a ďalší $s píšu }}
+```
+## Examples
 
-Supported plural categories depend on language of the entry. Please refer to [Unicode CLDR language rules](https://cldr.unicode.org/index/cldr-spec/plural-rules) documentation, where every language is specified.
+| Identifier iOS | CS |
+|--------------|----|
+| `test.variable.parameter` | ``%s string`` |
+| `test.pluralized.pluralString(pluralized)` | ``%1$d{{one: den \| few: dní \| other: dnů}}`` |
+| `test.pluralized.multiplePluralString(pluralized)` | ``%1$@ GB, %2$@. zóna, zbývá %3$d{{one: den \| few: dní \| other: dnů}}`` |
+| `test.pluralized.multipleMorePluralString(pluralized)` | ``%1$d{{one: den \| few: dní \| other: dnů}}, %2$@. zóna, zbývá %3$d{{one: den \| few: dní \| other: dnů}}`` |
+| `test.pluralized.multiplePluralTagOnly(pluralized)` | ``%@ GB, %@. zóna, zbývá %d{{one: den \| few: dní \| other: dnů}}`` |
+| `test.pluralized.multiplePluralStringReverseOrder(pluralized)` | ``%1$@ GB, %2$@. zóna, zbývá %3$d{{one: den \| few: dní \| other: dnů}}`` |
 
-Apple's documentation: [Localizing strings that contain plurals](https://developer.apple.com/documentation/xcode/localizing-strings-that-contain-plurals)
 
-### Examples
+This syntax makes pluralization clearer, more flexible, and easier to integrate with dynamic values.
+
+
+### ⚠️ Deprecated Syntax
+
+The older syntax for defining **plural categories** is still supported, but it has limitations compared to the new format:
+
+- It does **not** automatically prepend the dynamic value to each category.
+- It does **not** allow suppressing the value if not needed.
+
+#### 🚨 Important Notice:
+This deprecated syntax will be **removed** in **future versions**. It is recommended to update to the new syntax as soon as possible to ensure compatibility.
+
+#### Examples of Deprecated Syntax:
 
 | Identifier iOS | CS |
 | --- | --- |
