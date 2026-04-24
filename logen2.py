@@ -1,9 +1,12 @@
 import sys
 import subprocess
+import os
 import os.path
 import argparse
 import re
 import html
+import csv
+import json
 
 # - Classes
 
@@ -57,26 +60,28 @@ class LocalizedString:
          </dict>"""
         return value.format(self.key, self.string, joined_strings)
 
-# - Ensure Google APIs are installed via PIP
+# - Google Sheets (lazy import; skipped for --csv mode)
 
-def import_google_apis(firstAttempt):
+SCOPE = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
+LOGEN_SA_JSON_ENV = "LOGEN_SA_JSON"
+
+HttpError = None
+build = None
+
+
+def import_google_sheets_api(firstAttempt):
+    global HttpError
+    global build
     try:
-        global Request
-        global Credentials
-        global InstalledAppFlow
-        global HttpError
-        global build
+        from googleapiclient.errors import HttpError as _HttpError
+        from googleapiclient.discovery import build as _build
 
-        from google.auth.transport.requests import Request
-        from google.oauth2.credentials import Credentials
-        from google_auth_oauthlib.flow import InstalledAppFlow
-        from googleapiclient.errors import HttpError
-        from googleapiclient.discovery import build
-    except ImportError as error:
+        HttpError = _HttpError
+        build = _build
+    except ImportError:
         pip_install_google_apis()
-
         if firstAttempt:
-            import_google_apis(False)
+            import_google_sheets_api(False)
         else:
             print("error: FAILED TO IMPORT GOOGLE APIS ❌")
             sys.exit(1)
@@ -90,44 +95,35 @@ def pip_install_google_apis():
         "install",
         "--upgrade",
         "google-api-python-client",
+        "google-auth",
         "google-auth-httplib2",
-        "google-auth-oauthlib"
     ]
     subprocess.call(PIP_INSTALL_LIBS)
 
-import_google_apis(True)
 
-# - Variables
+def load_service_account_info():
+    """Load SA JSON from LOGEN_SA_JSON (full service account key JSON as a string)."""
+    plain_raw = os.environ.get(LOGEN_SA_JSON_ENV)
+    plain = str(plain_raw).strip() if plain_raw else ""
+    if not plain:
+        return None
+    try:
+        return json.loads(plain)
+    except json.JSONDecodeError as error:
+        print("error: {} is not valid JSON: {} ❌".format(LOGEN_SA_JSON_ENV, error))
+        sys.exit(1)
 
-SCOPE = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
 
-TOKEN_FILE = "token.json"
-CREDENTIALS_FILE = "credentials.json"
-LOCALIZATION_PATH: str = "Resources/Localization"
+def fetch_spreadsheet_from_sheets():
+    import_google_sheets_api(True)
+    from google.oauth2 import service_account
 
-SPREADSHEET_ID: str = None
-RANGE: str = None
-PROJECT_NAME: str = None
+    info = load_service_account_info()
+    if not info:
+        print("error: missing {} for Google Sheets mode ❌".format(LOGEN_SA_JSON_ENV))
+        sys.exit(1)
 
-# - Authentication
-
-def authorize_and_get_spreadsheet():
-    credentials = None
-    if os.path.exists(TOKEN_FILE):
-        credentials = Credentials.from_authorized_user_file(TOKEN_FILE, SCOPE)
-
-    if not credentials or not credentials.valid:
-        if credentials and credentials.expired and credentials.refresh_token:
-            credentials.refresh(Request())
-        else:
-            flow = InstalledAppFlow.from_client_secrets_file(
-                CREDENTIALS_FILE,
-                SCOPE
-            )
-            credentials = flow.run_local_server(port=8080)
-
-        with open(TOKEN_FILE, 'w') as token_file:
-            token_file.write(credentials.to_json())
+    credentials = service_account.Credentials.from_service_account_info(info, scopes=SCOPE)
 
     try:
         service = build("sheets", "v4", credentials=credentials)
@@ -140,13 +136,37 @@ def authorize_and_get_spreadsheet():
 
         if not values:
             print("error: NO DATA FOUND IN RANGE IN SPREADSHEET ❌")
-            exit()
+            sys.exit(1)
 
         return values
 
     except HttpError as error:
         print("error: ", error, "❌")
-        exit()
+        sys.exit(1)
+
+
+def load_spreadsheet_from_csv(path):
+    if not os.path.isfile(path):
+        print("error: CSV file not found: {} ❌".format(path))
+        sys.exit(1)
+    rows = []
+    with open(path, "r", encoding="utf-8-sig", newline="") as handle:
+        reader = csv.reader(handle)
+        for row in reader:
+            rows.append(row)
+    if not rows:
+        print("error: NO DATA IN CSV ❌")
+        sys.exit(1)
+    return rows
+
+# - Variables
+
+LOCALIZATION_PATH: str = "Resources/Localization"
+
+SPREADSHEET_ID: str = None
+RANGE: str = None
+PROJECT_NAME: str = None
+CSV_PATH: str = None
 
 # - Localization generator
 
@@ -389,13 +409,12 @@ def print_success_message(languages):
 
 def parse_arguments():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--id", required=True)
-    parser.add_argument("--sheet", required=True)
-    parser.add_argument("--last_column", required=True)
+    parser.add_argument("--csv", required=False, help="Path to a UTF-8 CSV export of the sheet (local mode; no Google API).")
+    parser.add_argument("--id", required=False)
+    parser.add_argument("--sheet", required=False)
+    parser.add_argument("--last_column", required=False)
     parser.add_argument("--project", required=True)
 
-    parser.add_argument("--token", required=False)
-    parser.add_argument("--credentials", required=False)
     parser.add_argument("--first_row", required=False)
     parser.add_argument("--localization_path", required=False)
     parser.add_argument("--filename", required=False, default="Localizable")
@@ -405,14 +424,32 @@ def parse_arguments():
     global SPREADSHEET_ID
     global RANGE
     global PROJECT_NAME
-    global TOKEN_FILE
-    global CREDENTIALS_FILE
     global LOCALIZATION_PATH
     global FILENAME
+    global CSV_PATH
 
-    SPREADSHEET_ID = arguments.id
     PROJECT_NAME = arguments.project
     FILENAME = arguments.filename
+    CSV_PATH = arguments.csv
+
+    if arguments.localization_path:
+        LOCALIZATION_PATH = arguments.localization_path
+
+    if CSV_PATH:
+        return arguments
+
+    missing = []
+    if not arguments.id:
+        missing.append("--id")
+    if not arguments.sheet:
+        missing.append("--sheet")
+    if not arguments.last_column:
+        missing.append("--last_column")
+    if missing:
+        print("error: Google Sheets mode requires: {} ❌".format(", ".join(missing)))
+        sys.exit(1)
+
+    SPREADSHEET_ID = arguments.id
 
     if arguments.first_row:
         RANGE = "'{}'!A{}:{}".format(
@@ -426,23 +463,40 @@ def parse_arguments():
             arguments.last_column
         )
 
-    if arguments.token:
-        TOKEN_FILE = arguments.token
+    return arguments
 
-    if arguments.credentials:
-        CREDENTIALS_FILE = arguments.credentials
 
-    if arguments.localization_path:
-        LOCALIZATION_PATH = arguments.localization_path
+def validate_and_resolve_mode():
+    """Exactly one of: --csv, or LOGEN_SA_JSON (Sheets API)."""
+    plain_raw = os.environ.get(LOGEN_SA_JSON_ENV)
+    plain = str(plain_raw).strip() if plain_raw else ""
+    sa_set = bool(plain)
+    if CSV_PATH and sa_set:
+        print("error: use either --csv or {}, not both ❌".format(LOGEN_SA_JSON_ENV))
+        sys.exit(1)
+    if not CSV_PATH and not sa_set:
+        print(
+            "error: choose one data source:\n"
+            "  - Local:  --csv /path/to/export.csv\n"
+            "  - CI/API: set {} to the full service account JSON string ❌".format(LOGEN_SA_JSON_ENV)
+        )
+        sys.exit(1)
+
+
+def load_spreadsheet():
+    if CSV_PATH:
+        return load_spreadsheet_from_csv(CSV_PATH)
+    return fetch_spreadsheet_from_sheets()
 
 # - Main
 
 if __name__ == "__main__":
     parse_arguments()
+    validate_and_resolve_mode()
 
     print("ℹ️ Generating localizations...")
 
-    spreadsheet = authorize_and_get_spreadsheet()
+    spreadsheet = load_spreadsheet()
     languages = get_languages(spreadsheet)
     for language in languages:
         strings, pluralizedStrings = generate_strings(spreadsheet, language)

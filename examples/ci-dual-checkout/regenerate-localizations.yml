@@ -1,0 +1,64 @@
+# Copy this file to your APP repository as:
+#   .github/workflows/regenerate-localizations.yml
+#
+# Prerequisites:
+# - Logen repository is public (or add `token:` to the Logen checkout step).
+# - Add `_logen/` to your app repo's .gitignore (see APP_REPO_DOTGITIGNORE in this folder).
+# - Create Actions secret LOGEN_SA_JSON on the app repo (service account JSON).
+# - Replace OWNER/Logen, CoffeeShop, sheet args, and optional ref.
+
+name: Regenerate localizations
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  logen:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out app repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+
+      - name: Check out public Logen
+        uses: actions/checkout@v4
+        with:
+          repository: OWNER/Logen
+          path: _logen
+          ref: main
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Google API libraries
+        run: pip install google-api-python-client google-auth google-auth-httplib2
+
+      - name: Run Logen
+        env:
+          LOGEN_SA_JSON: ${{ secrets.LOGEN_SA_JSON }}
+        working-directory: ${{ github.workspace }}
+        run: |
+          python3 _logen/Logen/logen2.py \
+            --id "${{ vars.LOGEN_SHEET_ID }}" \
+            --sheet "Strings" \
+            --first_row 2 \
+            --last_column H \
+            --project "CoffeeShop"
+
+      - name: Commit and push if files changed
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -- "CoffeeShop/Resources/Localization/"
+          if git diff --staged --quiet; then
+            echo "No localization changes to commit."
+          else
+            git commit -m "chore: regenerate localizations"
+            git push
+          fi

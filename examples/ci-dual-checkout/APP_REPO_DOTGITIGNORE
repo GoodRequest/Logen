@@ -1,0 +1,3 @@
+# Append these lines to your APP repository's .gitignore so the
+# ephemeral Logen clone from actions/checkout is never committed.
+_logen/

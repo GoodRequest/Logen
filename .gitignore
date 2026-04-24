@@ -9,4 +9,5 @@ Thumbs.db
 
 # Logen files
 token.json
+credentials.json
 .swiftpm

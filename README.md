@@ -7,8 +7,382 @@
 ![Version](https://img.shields.io/badge/latest_version-2.0.3-blueviolet)
 [![Python Version](https://img.shields.io/badge/python-3.9-blue)](https://www.python.org/downloads/release/python-390/)
 ![Swift Version](https://img.shields.io/badge/swift-5+-yellow)
-![SPM](https://img.shields.io/badge/SwiftPM-supported-green)
 ![Hotel](https://img.shields.io/badge/Hotel%3F-Trivago-orange)
+
+---
+
+## Table of contents
+
+- [How Logen fits in your toolchain](#how-logen-fits-in-your-toolchain)
+- [Public repository checklist](#public-repository-checklist)
+- [End-to-end flows (manual vs remote)](#end-to-end-flows-manual-vs-remote)
+- [Integration guide](#integration-guide)
+- [GitHub Actions from zero](#github-actions-from-zero)
+- [Troubleshooting](#troubleshooting)
+- [Google Cloud and Sheets access](#google-cloud-and-sheets-access)
+- [CLI reference](#cli-reference)
+- [How to set up (Python and Xcode)](#how-to-set-up)
+- [How to use (spreadsheet rules)](#how-to-use)
+- [Code reference](#code)
+
+---
+
+## How Logen fits in your toolchain
+
+Logen is a **Python** script (`logen2.py`) that you **add to your app project yourself**—for example by **cloning or downloading this repository** into a folder inside your app repo, or by adding it as a **git submodule**. It is **not** integrated via Swift Package Manager (SPM). The script reads your localization matrix (from **Google Sheets** in CI, or from a **CSV export** on a developer machine) and writes **`.strings`** and **`.stringsdict`** files into your app’s existing **`{Project}.lproj`** folder structure.
+
+Design goals:
+
+- **No per-developer Google OAuth** — nobody stores OAuth client JSON or refresh tokens on laptops for Logen.
+- **CI-friendly secrets** — production reads use a **service account** JSON in the environment as **`LOGEN_SA_JSON`** (paste the full key JSON; GitHub Actions supports multiline secrets).
+- **Offline / ad-hoc local runs** — use **`--csv`** after downloading the sheet as CSV from the browser.
+
+---
+
+## Public repository checklist
+
+Complete this **before** changing the Logen repo (or any clone that ever held keys) to **public**:
+
+1. **Rotate and revoke** any Google **OAuth client secrets** or **service account keys** that ever appeared in a commit—even if later deleted from the tip of a branch. Public repos expose **full git history**.
+2. Remove committed key files from history if required by your security policy (e.g. `git filter-repo`); rotating keys in GCP is mandatory regardless.
+3. Confirm **`credentials.json`** and similar are **not** in the default branch and are listed in [`.gitignore`](.gitignore).
+4. After the repo is public, app workflows can **`actions/checkout`** Logen **without** a PAT; private Logen still needs a **`token:`** on that checkout step.
+
+---
+
+## End-to-end flows (manual vs remote)
+
+### Manual flow (CSV on a developer machine)
+
+Use this when you want to iterate quickly without wiring CI, or when you cannot use the service account locally. You must **not** have **`LOGEN_SA_JSON`** set while using **`--csv`**, or Logen will exit with an error.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Editor as SpreadsheetEditor
+    participant Sheets as GoogleSheets
+    participant Dev as Developer
+    participant Logen as LogenScript
+    participant Tree as ProjectWorkspace
+
+    Editor->>Sheets: Update copy and keys in the shared sheet
+    Dev->>Sheets: File then Download then CommaSeparatedValues
+    Sheets-->>Dev: UTF8 CSV file for the active tab
+    Dev->>Dev: Unset LOGEN_SA_JSON in shell
+    Dev->>Tree: Save CSV path e.g. next to the repo or in tmp
+    Dev->>Logen: python3 logen2.py --csv path --project MyApp
+    Logen->>Tree: Write strings under MyApp/Resources/Localization
+    Logen-->>Dev: Print success and language list
+    Dev->>Tree: git diff, commit, or discard changes
+```
+
+**Important:** Run `logen2.py` with the **current working directory** set to the parent of your **Xcode project folder** (the folder whose name matches **`--project`**). The script builds paths as `/{project}/{localization_path}/{lang}.lproj/...` from `cwd`.
+
+### Remote flow (GitHub Actions and service account)
+
+Use this as the **team default**: one secret, reproducible runs, and developers **pull** updated strings. The diagram assumes **`workflow_dispatch`** (or a similar guarded trigger); adjust names to your repo.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Human as MaintainerOrBot
+    participant GHA as GitHubActions
+    participant Secrets as GitHubSecrets
+    participant API as GoogleSheetsAPI
+    participant Logen as LogenScript
+    participant Repo as GitRepository
+
+    Human->>GHA: Run workflow e.g. workflow_dispatch
+    GHA->>Secrets: Load LOGEN_SA_JSON into job env
+    GHA->>Repo: actions/checkout with fetch depth for push if needed
+    GHA->>GHA: setup-python and pip install Google client libs
+    GHA->>Logen: Run from parent of Xcode project folder
+    Logen->>API: spreadsheets.values.get with service account JWT
+    API-->>Logen: Rows for configured range
+    Logen->>Repo: Overwrite matching strings files on disk
+    Logen-->>GHA: Exit zero on success
+    GHA->>Repo: Optional git commit push or open PR
+    Repo-->>Human: Updated branch or PR
+    Note over Human: Other developers git pull or merge PR
+```
+
+---
+
+## Integration guide
+
+<a id="integration-add-logen"></a>
+
+### 1. Add Logen to your app project (choose one)
+
+Logen is **not** distributed as an SPM dependency. Pick how the **app** repo (and CI) get **`logen2.py`**.
+
+**Option C — CI-only dual checkout (recommended)**  
+
+Keep **no** Logen files in the app source tree. In GitHub Actions, **`actions/checkout`** the app repo, then **`actions/checkout`** this **public** Logen repo into **`_logen/`**, run **`python3 _logen/Logen/logen2.py`**, and commit only localization outputs.
+
+- Copy the ready-made workflow from **[`examples/ci-dual-checkout/`](examples/ci-dual-checkout/README.md)** into your app repo (see that folder’s **`README.md`** and **`regenerate-localizations.yml`**).
+- Add **`_logen/`** to your app’s **`.gitignore`** using the snippet in **`examples/ci-dual-checkout/APP_REPO_DOTGITIGNORE`** so the second checkout is never committed.
+- See **[Public repository checklist](#public-repository-checklist)** before publishing Logen.
+
+**Option A — Vendored folder**  
+
+1. Clone or download this repository.  
+2. Copy at least **`logen2.py`** into your app repo (e.g. **`Scripts/logen2.py`**).  
+3. Commit; refresh the file when Logen updates.
+
+**Option B — Git submodule**  
+
+```bash
+git submodule add https://github.com/YourOrg/Logen.git Vendor/Logen
+git submodule update --init --recursive
+```
+
+The script path is typically **`Vendor/Logen/Logen/logen2.py`**. In CI, use **`actions/checkout`** with **`submodules: true`**.
+
+Use one stable path in any **Run Script** phases and in **`python3 …`** commands.
+
+### 2. Align spreadsheet layout with the app
+
+Follow [How to use → Spreadsheet setup](#spreadsheet-setup): include a column whose header contains **`iOS`**, and use **two-letter** language codes for locale columns. Keep **one tab per run** (or run Logen multiple times with different **`--sheet`** values if you split locales across tabs).
+
+### 3. Prepare localization folders in Xcode
+
+For each language you generate, the script expects an existing path:
+
+```text
+<ParentOfXcodeProject>/<ProjectName>/<LocalizationPath>/<xx>.lproj/
+```
+
+Default **`LocalizationPath`** is **`Resources/Localization`**. Example:
+
+```text
+MyAppRepo/
+  MyApp/                          ← --project MyApp
+    Resources/
+      Localization/
+        en.lproj/
+          Localizable.strings
+        sk.lproj/
+          Localizable.strings
+```
+
+Create missing **`.lproj`** folders in Xcode (add empty `Localizable.strings` if needed) before the first run so **`prepare_path`** can resolve targets.
+
+### 4. Choose a run mode
+
+| Mode | When to use | Data source | Env vars |
+| --- | --- | --- | --- |
+| **CSV** | Local only, no SA on machine | `--csv /path` | **`LOGEN_SA_JSON` must be unset** |
+| **Sheets API** | CI or trusted runner | `--id`, `--sheet`, `--last_column` | **`LOGEN_SA_JSON`** (full service account JSON string) |
+
+You cannot combine **`--csv`** with **`LOGEN_SA_JSON`** in the same invocation.
+
+### 5. GitHub Actions (recommended remote integration)
+
+Complete [Google Cloud and Sheets access](#google-cloud-and-sheets-access) first, then follow **[GitHub Actions from zero](#github-actions-from-zero)** below. The **canonical workflow file** for the recommended **dual checkout** setup lives in **[`examples/ci-dual-checkout/regenerate-localizations.yml`](examples/ci-dual-checkout/regenerate-localizations.yml)**—copy it into your app repo and edit **`repository:`**, **`ref:`**, and Logen CLI arguments.
+
+<a id="github-actions-from-zero"></a>
+
+#### GitHub Actions from zero
+
+**What this is:** A *workflow* is a YAML file in your repo that tells GitHub’s servers to run commands when something happens (here: when **you** click **Run workflow**). You do **not** install anything on your laptop for the job itself—GitHub runs it in a temporary virtual machine.
+
+**What you need:** A GitHub repo with your **app source code**, permission to change **Settings**, and permission to **push** to the branch the workflow will update (often `main`).
+
+---
+
+##### Step 1 — Make sure `logen2.py` exists on the runner
+
+**“How does GitHub Actions get `logen2.py`?”**  
+The workflow only sees what **`actions/checkout`** brings into the job workspace.
+
+| Approach | Best for | Idea |
+| --- | --- | --- |
+| **C. Dual checkout (recommended)** | No Logen files in the app repo; **public** Logen | Second **`actions/checkout`** of this repo into **`_logen/`**, then **`python3 _logen/Logen/logen2.py`**. Add **`_logen/`** to the app **`.gitignore`**. |
+| **A. Vendored script** | Simplest disk layout | **`Scripts/logen2.py`** (or similar) committed in the app repo. |
+| **B. Git submodule** | Logen pinned as a submodule | Submodule + **`submodules: true`** on the app checkout. |
+
+The **Step 4** template below follows **Option C**. For **A** or **B**, change the **`python3`** path (and remove the second checkout when using **A** only).
+
+---
+
+##### Step 2 — Add the Google secret (click path)
+
+1. On GitHub, open your **app** repository (not necessarily the Logen package repo).
+2. Click **Settings** (top bar of the repo).
+3. In the left sidebar, open **Secrets and variables** → **Actions**.
+4. Click **New repository secret**.
+5. **Name:** type exactly: `LOGEN_SA_JSON` (all caps, underscores as shown).
+6. **Secret:** open the service account **`.json`** file from Google in a text editor, **Select All**, **Copy**, **Paste** into the secret field. It can be multiple lines—that is OK.
+7. Click **Add secret**.
+
+You will **not** see the secret again after saving (GitHub only shows “Updated”). To change it, delete the secret and create a new one, or use **Update**.
+
+---
+
+##### Step 3 — Create the workflow file in git
+
+A workflow file must live under **`.github/workflows/`** and end in **`.yml`** or **`.yaml`**.
+
+1. On your **computer**, open your **app** repo clone in an editor (or use GitHub’s **Add file → Create new file** in the browser).
+2. Create folders **`.github`** then **`workflows`** if they do not exist.
+3. Create a new file, for example: **`.github/workflows/regenerate-localizations.yml`**
+4. Copy from **[`examples/ci-dual-checkout/regenerate-localizations.yml`](examples/ci-dual-checkout/regenerate-localizations.yml)** or paste the **Step 4** template below. Replace **`OWNER/Logen`**, **`ref:`**, spreadsheet args, **`CoffeeShop`**, and **`git add`** paths.
+5. **Commit** to **`main`** (or your default branch) and **push**.
+
+Until this file exists on the default branch, the workflow may not appear under the **Actions** tab for `workflow_dispatch`.
+
+---
+
+##### Step 4 — Workflow file template (dual checkout / Option C)
+
+Uses a **second checkout** of this (Logen) repo into **`_logen/`** so the app repo does **not** need to contain `logen2.py`. **Add `_logen/` to your app `.gitignore`** (see [`examples/ci-dual-checkout/APP_REPO_DOTGITIGNORE`](examples/ci-dual-checkout/APP_REPO_DOTGITIGNORE)). Replace **`OWNER/Logen`**, **`ref:`**, **`--project`**, sheet args, and **`git add`** paths.
+
+```yaml
+# .github/workflows/regenerate-localizations.yml (in your APP repo)
+
+name: Regenerate localizations
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  logen:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out app repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+
+      - name: Check out public Logen
+        uses: actions/checkout@v4
+        with:
+          repository: OWNER/Logen
+          path: _logen
+          ref: main
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Google API libraries
+        run: pip install google-api-python-client google-auth google-auth-httplib2
+
+      - name: Run Logen
+        env:
+          LOGEN_SA_JSON: ${{ secrets.LOGEN_SA_JSON }}
+        working-directory: ${{ github.workspace }}
+        run: |
+          python3 _logen/Logen/logen2.py \
+            --id "${{ vars.LOGEN_SHEET_ID }}" \
+            --sheet "Strings" \
+            --first_row 2 \
+            --last_column H \
+            --project "CoffeeShop"
+
+      - name: Commit and push if files changed
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -- "CoffeeShop/Resources/Localization/"
+          if git diff --staged --quiet; then
+            echo "No localization changes to commit."
+          else
+            git commit -m "chore: regenerate localizations"
+            git push
+          fi
+```
+
+**Why `working-directory: ${{ github.workspace }}`:** Must be the **parent** of your Xcode project folder so paths like **`./CoffeeShop/Resources/Localization/`** resolve.
+
+**Why `_logen/Logen/logen2.py`:** Matches this repository’s layout (`Logen/logen2.py` at clone root **`_logen`**). If Logen is **private**, add **`token: ${{ secrets.LOGEN_READ_PAT }}`** (or similar) to the **Check out public Logen** step. For **vendored** (**A**) or **submodule** (**B**) setups, change the `python3` path and drop the second checkout when appropriate.
+
+---
+
+##### Step 5 — Run the workflow by hand
+
+1. On GitHub, open the repo → tab **Actions**.
+2. In the **left sidebar**, click the workflow name **Regenerate localizations** (the `name:` from YAML).
+3. On the right, click **Run workflow** → leave branch as **`main`** (or your default) → **Run workflow**.
+4. A row appears in the list; click it, then click the **`logen`** job to see **logs** line by line.
+
+If something fails, open the red ❌ step and read the last lines—they usually contain Python’s error message.
+
+---
+
+##### Step 6 — If `git push` fails (permissions or branch rules)
+
+- **`Permission denied` / `403`:** The default **`GITHUB_TOKEN`** may not be allowed to push to **`main`**. Fix: **Settings → Actions → General → Workflow permissions** → enable **Read and write permissions**, and allow GitHub Actions to create and approve pull requests if your org policy requires it—or use a **Personal Access Token** stored as another secret and configure `actions/checkout` with `token: ${{ secrets.YOUR_PAT }}`.
+- **Branch protection** blocking direct pushes: remove the **Commit and push** step for now and only inspect the generated files from the **workflow artifact**, or switch to a workflow that **opens a pull request** instead of pushing to `main` (search GitHub for `create-pull-request` action examples).
+
+---
+
+##### Optional — Put the sheet ID in a variable instead of YAML
+
+If you do not want the spreadsheet ID in the committed file:
+
+1. **Settings → Secrets and variables → Actions** → tab **Variables** → **New repository variable**.
+2. Name e.g. **`LOGEN_SHEET_ID`**, value = the ID from the sheet URL.
+3. In YAML, replace the `--id` value with `"${{ vars.LOGEN_SHEET_ID }}"` (note **`vars`**, not **`secrets`**). Example variable value: `1Bx8fJsqTziA7kqBLNzboFsOgDefGhIjKlMnOpQr0123` (still use **your** real id).
+
+---
+
+##### Quick glossary
+
+| Term | Meaning |
+| --- | --- |
+| **Workflow** | The whole YAML file under `.github/workflows/`. |
+| **Job** | A named block like `logen:`; runs on one machine. |
+| **Step** | One item under `steps:`; often `run:` shell commands or `uses:` a premade action. |
+| **`workflow_dispatch`** | Manual trigger only (no automatic runs until you click Run). |
+| **`secrets.LOGEN_SA_JSON`** | Injects the secret you created in Settings as an environment variable for that step. |
+
+### 6. Optional Xcode Aggregate target (CSV only)
+
+If you want a one-click regenerate **without** secrets in Xcode, add an **Aggregate** target whose **Run Script** only invokes **`--csv`** pointing at a file path (ignored by git or refreshed by the developer). Do **not** embed **`LOGEN_SA_JSON`** in the project file.
+
+### 7. Verification checklist
+
+- [ ] Service account email has **Viewer** (or higher) access on the spreadsheet.
+- [ ] **`--sheet`** matches the **exact tab name** in Google Sheets.
+- [ ] **`--last_column`** covers all locale columns you need.
+- [ ] **`--project`** matches the **Xcode project / folder name** under the parent directory used as `cwd`.
+- [ ] **`LOGEN_SA_JSON`** parses as JSON with **`type`** **`service_account`**.
+- [ ] CSV export uses the **same tab** you would pass as **`--sheet`** in API mode.
+
+<a id="troubleshooting"></a>
+
+### Troubleshooting
+
+| Symptom | Likely cause | What to do |
+| --- | --- | --- |
+| `use either --csv or LOGEN_SA_JSON, not both` | Shell still exports **`LOGEN_SA_JSON`** locally | `unset LOGEN_SA_JSON` (or a clean subshell) before **`--csv`**. |
+| `choose one data source` | **`LOGEN_SA_JSON`** not set in Sheets mode | In the workflow step, set `env: LOGEN_SA_JSON: ${{ secrets.LOGEN_SA_JSON }}`. |
+| `NO DATA FOUND IN RANGE` / empty API result | Wrong **`--sheet`**, **`--last_column`**, or **`--first_row`** | Open the sheet and confirm tab name and last column letter; widen **`--last_column`**. |
+| `CSV file not found` | Wrong path relative to where you run Python | Pass an absolute path or **`cd`** to the directory containing the CSV first. |
+| `Localization file not found` warnings | Missing **`.lproj`** directory on disk | Create **`xx.lproj`** folders under **`Resources/Localization`** (or your **`--localization_path`**) in Xcode. |
+| `403` or permission errors from Google API | Sheet not shared with the service account | Share the spreadsheet with the SA email from the JSON **`client_email`**. |
+| `LOGEN_SA_JSON is not valid JSON` | Truncated or bad paste in the secret | Re-paste the full JSON from the `.json` key file in **GitHub → Settings → Secrets**. |
+
+---
+
+## Google Cloud and Sheets access
+
+1. In [Google Cloud Console](https://console.cloud.google.com/), select or create a project.
+2. Enable **Google Sheets API** for that project (**APIs & Services → Library**).
+3. **IAM & Admin → Service Accounts → Create service account** (dedicated account for Logen is recommended).
+4. **Keys → Add key → JSON**; download the key once. **Do not commit** this file.
+5. **Share** each Google Sheet with the service account’s email (**`something@...iam.gserviceaccount.com`**) as **Viewer** (read-only matches Logen’s scope).
+6. Add the key to GitHub: create a secret **`LOGEN_SA_JSON`** and paste the **full JSON** from the downloaded key file. Never commit the key file to git.
+
+Rotate keys by creating a new key, updating the secret, deleting the old key in GCP, and re-running the workflow.
+
+---
 
 # How to set up
 
@@ -44,62 +418,91 @@ which pip3
 
 ## Xcode integration
 
-Add Logen to your [Swift Build Tools' `Package.swift`](https://github.com/GoodRequest/Logen/blob/main/res/BuildToolsTutorial.md) via SwiftPM.
+Add Logen **without** Swift Package Manager:
 
-```
-.package(url: "git@bitbucket.org:GoodRequest/logen_ios.git", .upToNextMajor(from: "2.0.0"))
-```
+1. If you use **CI-only dual checkout**, you do **not** need `logen2.py` on disk for Xcode—strings arrive via **git pull** after the workflow runs. For **local** runs (optional), follow **[integration guide §1](#integration-add-logen)** so the script exists under your app project (e.g. **`${PROJECT_DIR}/Scripts/logen2.py`**) or via a **submodule** path.
+2. Optional: create an **Aggregate** target with a **Run Script** phase that invokes `python3` with **`--csv`** and paths relative to **`${PROJECT_DIR}`**, or run the same command from Terminal.
 
-Hit *Cmd+S* and you should see Xcode starting to fetch the package for you. Wait until all package dependencies are resolved.
+Xcode does **not** need a Logen entry in **`Package.swift`**; the script is plain Python and is not linked into your app binary.
 
-Open project settings and create a new build target
+<a id="cli-reference"></a>
 
-- Click `+` in the bottom left corner
-- Open tab "Other"
-- Select "Aggregate"
-- Give it a name (eg. "Logen 2")
-- and "Finish"
+### Running `logen2.py`
 
-Select the target you just created and switch to "Build Phases" tab.
+Logen supports **exactly one** data source per run:
 
-- Click `+` in the top left corner
-- Select "New Run Script Phase"
-- (not required) Rename the build phase to something more descriptive
+1. **CI / API (Google Sheets)** — set **`LOGEN_SA_JSON`** to the full service account **JSON** string (paste as plain text). The service account must have access to the spreadsheet (share the sheet with its client email). Then pass `--id`, `--sheet`, `--last_column`, and `--project` as below. Do not set **`LOGEN_SA_JSON`** when using local CSV mode.
 
-Copy and paste this script (also remove two wild `#`, those are there only to prevent Bitbucket from obliterating the formatting of this readme):
+2. **Local (no Google credentials)** — in Google Sheets use **File → Download → Comma-separated values (.csv)** for the correct tab, then run with **`--csv /path/to/export.csv`**. If **`LOGEN_SA_JSON`** is set in your shell, unset it for this run (the script errors if CSV and **`LOGEN_SA_JSON`** are combined).
 
-```
-SCRIPT_PATH="${BUILD_DIR%/Build/*}/SourcePackages/checkouts/Logen/logen2.py"
-CREDS="${BUILD_DIR%/Build/*}/SourcePackages/checkouts/Logen/credentials.json"
-TOKEN="${PROJECT_DIR}/logen2_token.json"#
-GOOGLE_SHEETS_ID="SHEET ID HERE"
-SHEET="SHEET NAME HERE"
-FIRST_ROW="1"
-LAST_COLUMN="E"#if test -f "${SCRIPT_PATH}"; then
-    python3 "${SCRIPT_PATH}" --id "${GOOGLE_SHEETS_ID}" --sheet "${SHEET}" --first_row "${FIRST_ROW}" --last_column "${LAST_COLUMN}" --project "${PROJECT_NAME}" --credentials "${CREDS}" --token "${TOKEN}"else
-    echo "warning: Script not found, add it from https://github.org/GoodRequest/logen_ios/ 😭😩🤦‍♂️"fi
-```
+**Recommended team flow:** regenerate strings in **GitHub Actions** (or another CI) with **`LOGEN_SA_JSON`** as a secret, commit or open a PR, and developers **pull** updated localizations. Avoid putting the service account secret into Xcode **Run Script** phases on every machine.
+
+Optional: you can still add an **Aggregate** target with a **Run Script** phase that only runs **`--csv …`** against a path inside the repo (e.g. a checked-in or ignored export), if you want a one-click local regenerate without API keys.
 
 | Parameters | Required | Description |
 | --- | --- | --- |
-| --id | yes | Spreadsheet identifier. You can find it inside a link from your browser, when you open google spreadsheets (for example, if your link is https://docs.google.com/spreadsheets/d/ASDFGHJKL/edit#gid=0, the identifier is ASDFGHJKL). |
-| --project | yes | Project name. Recommended value is "${PROJECT_NAME}" (Xcode build variable). |
-| --sheet | yes | Name of the sheet in spreadsheet. You can find it in the bottom left. |
-| --first_row | no | First row of the spreadsheet. This is an optional argument (with a default value of 1) in case you need to skip the first couple of rows. |
-| --last_column | yes | Last column in the sheet that contains data. For example if your spreadsheet has 7 columns, the last one is marked G.P.S. if you need explaining what sheets and ranges are, you should probably take an Excel course |
-| --credentials | no | Credentials authorizing the app to use google's API. Recommended value is the location of credentials.json in build directory. "${BUILD_DIR%/Build/*}/SourcePackages/checkouts/logen_ios/credentials.json"Default value points to credentials.json file in the same directory where the script is invoked from. |
-| --token | no | Credentials authorizing the user to use google's API. Recommended value is "${PROJECT_DIR}/logen2_token.json", or anywhere else in the user's computer. This token should not be pushed to git. |
-| --localization_path | no | Path inside the project directory, where the final localization files should be exported into. Does not start nor end with a slash. Does not specify the localization language. Default value: Resources/Localization. |
+| --project | yes | Project name. Use `"${PROJECT_NAME}"` when invoking from Xcode. |
+| --csv | no* | Path to a UTF-8 CSV export of the sheet. *Required for local mode (mutually exclusive with `LOGEN_SA_JSON`). |
+| --id | no* | Spreadsheet ID from the sheet URL (e.g. `https://docs.google.com/spreadsheets/d/ASDFGHJKL/edit`). *Required with Sheets API when `--csv` is not used. |
+| --sheet | no* | Tab name (bottom of the sheet). *Required with Sheets API when `--csv` is not used. |
+| --last_column | no* | Last column letter with data (e.g. `G`). *Required with Sheets API when `--csv` is not used. |
+| --first_row | no | First data row (default `1`). |
+| --localization_path | no | Path inside the project directory for output (no leading/trailing slash). Default: `Resources/Localization`. |
+| --filename | no | Base name for `.strings` / `.stringsdict` files. Default: `Localizable`. |
 
-Generate your token file:
+#### Example values (copy-paste style)
 
-- Run the target!
-- Your web browser should open. Log in with your google account ending in `@goodrequest.com`. It's best to have your password already saved in the browser/keychain, since the timeout is rather short.
-- Give Logen 2 access to spreadsheets API
-- In case the browser gets stuck on loading, hit *Cmd+R* to refresh the website (but it shouldn't really happen)
-- You should get redirected to a success screen
-1. Add the token file to `.gitignore`
-2. Enjoy your localizations!
+These are **illustrative** — replace the spreadsheet **`--id`** with the real value from **your** sheet URL (same string as in the URL path). The app folder **`CoffeeShop`** must match a real directory under the directory where you run the command.
+
+**Browser URL (illustration):**
+
+```text
+https://docs.google.com/spreadsheets/d/1Bx8fJsqTziA7kqBLNzboFsOgDefGhIjKlMnOpQr0123/edit#gid=0
+                                      └────────────────────────── spreadsheetId ──────────────────────────┘
+```
+
+**Sheets API run in GitHub Actions** (inside the workflow `run:` step; dual checkout; `LOGEN_SA_JSON` from **Secrets**):
+
+```yaml
+run: |
+  python3 _logen/Logen/logen2.py \
+    --id "${{ vars.LOGEN_SHEET_ID }}" \
+    --sheet "Strings" \
+    --first_row 2 \
+    --last_column H \
+    --project "CoffeeShop"
+```
+
+Use a literal **`--id "..."`** instead of **`vars`** if you prefer. Same fragment appears in **Step 4** above.
+
+**Sheets API run locally** (vendored script at **`Scripts/logen2.py`**):
+
+```bash
+cd /path/to/parent-of-xcode-project   # e.g. repo root that contains CoffeeShop/
+python3 Scripts/logen2.py \
+  --id "1Bx8fJsqTziA7kqBLNzboFsOgDefGhIjKlMnOpQr0123" \
+  --sheet "Strings" \
+  --first_row 2 \
+  --last_column H \
+  --project "CoffeeShop"
+```
+
+- **`--id`** — the segment after `/d/` in the URL (no slashes; Google’s ids are often **44 characters**, as in the example below).
+- **`--sheet`** — the **tab name** at the bottom of the spreadsheet (must match exactly, including spaces and case).
+- **`--first_row`** — here **`2`** means “data starts on row 2” (row 1 is headers / description rows).
+- **`--last_column`** — **`H`** means the range ends at column **H** (so `A`…`H` is read for each row).
+- **`--project`** — Xcode project **folder** name under `cwd` (here **`CoffeeShop`**), so outputs go under **`CoffeeShop/Resources/Localization/`**.
+
+**Local CSV run** (no Google env vars set):
+
+```bash
+cd /path/to/parent-of-xcode-project
+python3 Scripts/logen2.py \
+  --csv "./exports/CoffeeShop-Strings-tab.csv" \
+  --project "CoffeeShop"
+```
+
+Use a CSV exported from the **same tab** you would target with **`--sheet`** in API mode.
 
 ![Slovak parrot](https://cultofthepartyparrot.com/flags/hd/slovakiaparrot.gif)
 ![USA parrot](https://cultofthepartyparrot.com/flags/hd/unitedstatesofamericaparrot.gif)
@@ -161,49 +564,14 @@ You can also use Logen to generate different files that you want to be localized
 
 # Code
 
-## Variables
+The source of truth is [`logen2.py`](logen2.py). This section summarizes behavior; open the file for exact logic.
 
-```python
-SCOPE = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
+## Authentication and data loading
 
-TOKEN_FILE = "token.json"
-CREDENTIALS_FILE = "credentials.json"
-LOCALIZATION_PATH: str = "Resources/Localization"
+- **`LOGEN_SA_JSON`** (environment): full **service account** JSON as a string. Used with **`--id`**, **`--sheet`**, **`--last_column`** to fetch the range via the Sheets API. Google client libraries are imported only on this path (`import_google_sheets_api`, `fetch_spreadsheet_from_sheets`).
+- **`--csv`**: loads a UTF-8 CSV (with BOM tolerated) into the same **`list[list[str]]`** shape as the API; no Google packages required (`load_spreadsheet_from_csv`).
 
-SPREADSHEET_ID: str = None
-RANGE: str = None
-PROJECT_NAME: str = None
-```
-
-**`SCOPE`**:
-
-- This variable holds the authentication scope required for accessing Google Sheets. It specifies that the script needs read-only access to Google Spreadsheets.
-
-**`TOKEN_FILE`**:
-
-- It stores the name of the file where the authentication token will be stored. This token is used for making authorized requests to the Google Sheets API.
-
-**`CREDENTIALS_FILE`**:
-
-- This variable holds the name of the file containing the client credentials. The script uses these credentials to authenticate with the Google Sheets API.
-
-**`LOCALIZATION_PATH`**:
-
-- Specifies the path where the generated localization files will be stored. It is set to "Resources/Localization" by default.
-
-**`SPREADSHEET_ID`**:
-
-- This variable will hold the unique identifier (ID) of the Google Sheets document from which the script will retrieve localization data. It is initially set to **`None`**.
-
-**`RANGE`**:
-
-- Represents the range of cells within the Google Sheet to be retrieved. It will be in the format "'SheetName'!A1:B10", where 'SheetName' is the name of the sheet, and A1:B10 is the range. Initially set to **`None`**.
-
-**`PROJECT_NAME`**:
-
-- Holds the name of the project for which localization is being generated. It is initially set to **`None`**.
-
-These variables provide the script with the necessary information for authentication, data retrieval, and output location. The **`SPREADSHEET_ID`**, **`RANGE`**, and **`PROJECT_NAME`** are likely to be set during the execution of the script, potentially through command-line arguments or some other input mechanism.
+`LOCALIZATION_PATH`, `SPREADSHEET_ID`, `RANGE`, and `PROJECT_NAME` are set from CLI args where applicable.
 
 ## **Classes**
 
@@ -276,101 +644,7 @@ class LocalizedString:
 
 ## Functions
 
-### **`import_google_apis(firstAttempt)`**
-
-This function imports the necessary modules for Google APIs. If an import error occurs, it attempts to install the required libraries using **`pip_install_google_apis`**.
-
-- **Parameters:**
-    - **`firstAttempt`** (bool): Indicates whether this is the first attempt to import Google APIs.
-
-```python
-def import_google_apis(firstAttempt):
-    try:
-        global Request
-        global Credentials
-        global InstalledAppFlow
-        global HttpError
-        global build
-
-        from google.auth.transport.requests import Request
-        from google.oauth2.credentials import Credentials
-        from google_auth_oauthlib.flow import InstalledAppFlow
-        from googleapiclient.errors import HttpError
-        from googleapiclient.discovery import build
-    except ImportError as error:
-        pip_install_google_apis()
-
-        if firstAttempt:
-            import_google_apis(False)
-        else:
-            print("error: FAILED TO IMPORT GOOGLE APIS ❌")
-            sys.exit(1)
-```
-
-### **`pip_install_google_apis()`**
-
-This function installs or upgrades the required Google API libraries using **`pip`**.
-
-```python
-def pip_install_google_apis():
-    PIP_INSTALL_LIBS = [
-        sys.executable,
-        "-m",
-        "pip",
-        "install",
-        "--upgrade",
-        "google-api-python-client",
-        "google-auth-httplib2",
-        "google-auth-oauthlib"
-    ]
-    subprocess.call(PIP_INSTALL_LIBS)
-```
-
-### **`authorize_and_get_spreadsheet()`**
-
-This function handles the authentication process for the Google Sheets API and retrieves data from the specified spreadsheet.
-
-- **Returns:**
-    - List of lists representing the values from the spreadsheet.
-
-```python
-def authorize_and_get_spreadsheet():
-    credentials = None
-    if os.path.exists(TOKEN_FILE):
-        credentials = Credentials.from_authorized_user_file(TOKEN_FILE, SCOPE)
-
-    if not credentials or not credentials.valid:
-        if credentials and credentials.expired and credentials.refresh_token:
-            credentials.refresh(Request())
-        else:
-            flow = InstalledAppFlow.from_client_secrets_file(
-                CREDENTIALS_FILE,
-                SCOPE
-            )
-            credentials = flow.run_local_server(port=8080)
-
-        with open(TOKEN_FILE, 'w') as token_file:
-            token_file.write(credentials.to_json())
-
-    try:
-        service = build("sheets", "v4", credentials=credentials)
-        sheet = service.spreadsheets()
-        result = sheet.values().get(
-            spreadsheetId=SPREADSHEET_ID,
-            range=RANGE
-        ).execute()
-        values = result.get("values", [])
-
-        if not values:
-            print("error: NO DATA FOUND IN RANGE IN SPREADSHEET ❌")
-            exit()
-
-        return values
-
-    except HttpError as error:
-        print("error: ", error, "❌")
-        exit()
-```
+CLI and I/O helpers include **`parse_arguments`**, **`validate_and_resolve_mode`**, **`load_spreadsheet`**, **`import_google_sheets_api`**, **`pip_install_google_apis`**, **`fetch_spreadsheet_from_sheets`**, and **`load_spreadsheet_from_csv`**. See [`logen2.py`](logen2.py).
 
 ### **`get_languages(spreadsheet)`**
 
@@ -719,31 +993,18 @@ def save_special_strings(strings, language):
             print("⚠️ Localization file not found - {} ⚠️".format(language))
 ```
 
-### **`prepare_path(language, isPluralizedFile)`**
+### **`prepare_path(language, isPluralizedFile, fileName)`**
 
-Prepares the path for saving localization files.
+Prepares the path for saving localization files (uses global **`FILENAME`** / per-file name for special strings).
 
 - **Parameters:**
     - **`language`** (str): The language for which to prepare the path.
-    - **`isPluralizedFile`** (bool): Indicates whether the file is for pluralized strings.
+    - **`isPluralizedFile`** (bool): Whether the file is `.stringsdict`.
+    - **`fileName`** (str): Base name (`Localizable`, `InfoPlist`, etc.).
 - **Returns:**
-    - Path for saving the localization file.
+    - Absolute path if the `.lproj` directory exists, else **`None`**.
 
-```python
-def prepare_path(language, isPluralizedFile):
-    root_dir = os.path.abspath(os.curdir)
-    path = "/{}/{}/{}/Localizable.{}".format(
-        PROJECT_NAME,
-        LOCALIZATION_PATH,
-        "{}.lproj".format(language.lower()),
-        "stringsdict" if isPluralizedFile else "strings"
-    )
-    print("ℹ️ Preparing localization file - {}".format(root_dir + path))
-    if os.path.exists(root_dir + path):
-        return root_dir + path
-    else:
-        return None
-```
+See [`logen2.py`](logen2.py) for the implementation.
 
 ### **`print_success_message(languages)`**
 
@@ -761,50 +1022,4 @@ def print_success_message(languages):
 
 ### **`parse_arguments()`**
 
-Parses command-line arguments using the **`argparse`** module.
-
-```python
-def parse_arguments():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--id", required=True)
-    parser.add_argument("--sheet", required=True)
-    parser.add_argument("--last_column", required=True)
-    parser.add_argument("--project", required=True)
-
-    parser.add_argument("--token", required=False)
-    parser.add_argument("--credentials", required=False)
-    parser.add_argument("--first_row", required=False)
-    parser.add_argument("--localization_path", required=False)
-    arguments = parser.parse_args()
-
-    global SPREADSHEET_ID
-    global RANGE
-    global PROJECT_NAME
-    global TOKEN_FILE
-    global CREDENTIALS_FILE
-    global LOCALIZATION_PATH
-
-    SPREADSHEET_ID = arguments.id
-    PROJECT_NAME = arguments.project
-
-    if arguments.first_row:
-        RANGE = "'{}'!A{}:{}".format(
-            arguments.sheet,
-            arguments.first_row,
-            arguments.last_column
-        )
-    else:
-        RANGE = "'{}'!A1:{}".format(
-            arguments.sheet,
-            arguments.last_column
-        )
-
-    if arguments.token:
-        TOKEN_FILE = arguments.token
-
-    if arguments.credentials:
-        CREDENTIALS_FILE = arguments.credentials
-
-    if arguments.localization_path:
-        LOCALIZATION_PATH = arguments.localization_path
-```
+Parses CLI args; **`--id` / `--sheet` / `--last_column`** are required only when not using **`--csv`**. See [`logen2.py`](logen2.py) for the full implementation (including **`--filename`** and **`validate_and_resolve_mode`** after parse).
