@@ -145,7 +145,7 @@ Use one stable path in any **Run Script** phases and in `**python3 …`** comman
 
 ### 2. Align spreadsheet layout with the app
 
-Follow [How to use → Spreadsheet setup](#spreadsheet-setup): include a column whose header contains `**iOS**`, and use **two-letter** language codes for locale columns. Keep **one tab per run** (or run Logen multiple times with different `**--sheet`** values if you split locales across tabs).
+Follow [How to use → Spreadsheet setup](#spreadsheet-setup): include a column whose header contains `**iOS**` or `**Identifier**`, and use locale columns such as `**en**`, `**sk**`, `**sk_SK**`, or `**cs-CZ**`. Keep **one tab per run** (or run Logen multiple times with different `**--sheet`** values if you split locales across tabs).
 
 ### 3. Prepare localization folders in Xcode
 
@@ -460,8 +460,10 @@ Optional: you can still add an **Aggregate** target with a **Run Script** phase 
 | ------------------- | -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
 | --project           | yes      | Project name. Use `"${PROJECT_NAME}"` when invoking from Xcode.                                                                                       |
 | --csv               | no*      | Path to a UTF-8 CSV export of the sheet. *Required for local mode (mutually exclusive with `LOGEN_SA_JSON`).                                          |
+| --overlay_csv       | no       | Optional UTF-8 CSV export with override rows keyed by the same identifier column. Applied on top of the base sheet/CSV before files are generated.    |
 | --id                | no*      | Spreadsheet ID from the sheet URL (e.g. `https://docs.google.com/spreadsheets/d/ASDFGHJKL/edit`). *Required with Sheets API when `--csv` is not used. |
 | --sheet             | no*      | Tab name (bottom of the sheet). *Required with Sheets API when `--csv` is not used.                                                                   |
+| --overlay_sheet     | no       | Optional Google Sheets tab with override rows keyed by the same identifier column. Uses the same `--first_row` and `--last_column` bounds.            |
 | --last_column       | no*      | Last column letter with data (e.g. `G`). *Required with Sheets API when `--csv` is not used.                                                          |
 | --first_row         | no       | First data row (default `1`).                                                                                                                         |
 | --localization_path | no       | Path inside the project directory for output (no leading/trailing slash). Default: `Resources/Localization`.                                          |
@@ -485,14 +487,29 @@ https://docs.google.com/spreadsheets/d/1Bx8fJsqTziA7kqBLNzboFsOgDefGhIjKlMnOpQr0
 env:
   LOGEN_SA_JSON: ${{ secrets.LOGEN_SA_JSON }}
   LOGEN_SCRIPT_PATH: ${{ vars.LOGEN_SCRIPT_PATH }}
+  LOGEN_OVERLAY_SHEET: ${{ inputs.overlay_sheet }}
 run: |
   SCRIPT="${LOGEN_SCRIPT_PATH:-_logen/Logen/logen2.py}"
+  OVERLAY_ARGS=()
+  if [ -n "${LOGEN_OVERLAY_SHEET}" ]; then
+    OVERLAY_ARGS+=(--overlay_sheet "${LOGEN_OVERLAY_SHEET}")
+  fi
+
   python3 "$SCRIPT" \
     --id "${{ vars.LOGEN_SHEET_ID }}" \
     --sheet "Strings" \
     --first_row 2 \
     --last_column H \
-    --project "CoffeeShop"
+    --project "CoffeeShop" \
+    "${OVERLAY_ARGS[@]}"
+
+  python3 "$SCRIPT" \
+    --id "${{ vars.LOGEN_SHEET_ID }}" \
+    --sheet "InfoPlist" \
+    --first_row 2 \
+    --last_column H \
+    --project "CoffeeShop" \
+    --filename "InfoPlist"
 ```
 
 Use a literal `**--id "..."**` instead of `**vars**` if you prefer. Same fragment appears in **Step 4** above.
@@ -506,6 +523,7 @@ python3 Scripts/logen2.py \
   --sheet "Strings" \
   --first_row 2 \
   --last_column H \
+  --overlay_sheet "NotinoOverrides" \
   --project "CoffeeShop"
 ```
 
@@ -538,7 +556,7 @@ Spain parrot
 There isn't much to set up in the spreadsheets. They should follow this general formatting:
 
 
-| Description | 1234 iOS ASDF        | Android      | SK        | EN            |
+| Description | 1234 Identifier ASDF | Android      | SK        | EN            |
 | ----------- | -------------------- | ------------ | --------- | ------------- |
 | Any         | Title of this column | This should  | Preklad 1 | Translation 1 |
 | description | should contain       | burn in hell | Preklad 2 | Translation 2 |
@@ -546,7 +564,7 @@ There isn't much to set up in the spreadsheets. They should follow this general 
 | want        | somewhere            |              | Preklad 4 | ...           |
 
 
-It's important to note that the language column should be exactly 2 letters long and reflect the same language code that's used in the project.
+Language columns should use locale codes that match the folders in your project, for example `en`, `sk`, `sk_SK`, or `cs-CZ`. Logen normalizes region variants to Apple-style `.lproj` names such as `sk_SK.lproj` and `cs_CZ.lproj`.
 
 ## Localizations with parameter
 
@@ -567,7 +585,7 @@ To inform Logen that this localization should be treated as pluralized you will 
 ### Examples
 
 
-| Location | Identifier iOS                                               | CS                                             |
+| Location | Identifier / iOS                                             | CS                                             |
 | -------- | ------------------------------------------------------------ | ---------------------------------------------- |
 |          | test.pluralized.normalString                                 | %s string                                      |
 |          | test.pluralized.pluralString(pluralized)                     | %1$ddendnídnů                                  |
@@ -579,12 +597,12 @@ To inform Logen that this localization should be treated as pluralized you will 
 
 ## Other Localized files
 
-You can also use Logen to generate different files that you want to be localized. For example InfoPlist.stings, in this case all you need to do is to write Property List Key in Identifier iOS column and mark it with name of the file → in this case (InfoPlist)
+You can also use Logen to generate different files that you want to be localized. For example `InfoPlist.strings`. If you keep those keys in the main sheet, mark them with the file name suffix, for example `(InfoPlist)`. If you generate `InfoPlist` from its own dedicated tab and pass `--filename "InfoPlist"`, use the plain property list keys without the suffix.
 
 ### Examples
 
 
-| Location | Identifier iOS                      | CS                          |
+| Location | Identifier / iOS                   | CS                          |
 | -------- | ----------------------------------- | --------------------------- |
 |          | NSFaceIDUsageDescription(InfoPlist) | NSFaceIDUsageDescription CS |
 |          | CFBundleDisplayName(InfoPlist)      | CFBundleDisplayName CS      |

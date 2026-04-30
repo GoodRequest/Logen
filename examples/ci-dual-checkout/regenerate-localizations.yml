@@ -18,6 +18,11 @@ name: Regenerate localizations
 
 on:
   workflow_dispatch:
+    inputs:
+      overlay_sheet:
+        description: Optional overlay tab name for flavour-specific strings
+        required: false
+        default: ""
 
 permissions:
   contents: write
@@ -51,6 +56,7 @@ jobs:
         env:
           LOGEN_SA_JSON: ${{ secrets.LOGEN_SA_JSON }}
           LOGEN_SCRIPT_PATH: ${{ vars.LOGEN_SCRIPT_PATH }}
+          LOGEN_OVERLAY_SHEET: ${{ inputs.overlay_sheet }}
         working-directory: ${{ github.workspace }}
         run: |
           SCRIPT="${LOGEN_SCRIPT_PATH:-_logen/Logen/logen2.py}"
@@ -58,12 +64,27 @@ jobs:
             echo "error: Logen script not found: $SCRIPT"
             exit 1
           fi
+
+          OVERLAY_ARGS=()
+          if [ -n "${LOGEN_OVERLAY_SHEET}" ]; then
+            OVERLAY_ARGS+=(--overlay_sheet "${LOGEN_OVERLAY_SHEET}")
+          fi
+
           python3 "$SCRIPT" \
             --id "${{ vars.LOGEN_SHEET_ID }}" \
             --sheet "Strings" \
             --first_row 2 \
             --last_column H \
-            --project "CoffeeShop"
+            --project "CoffeeShop" \
+            "${OVERLAY_ARGS[@]}"
+
+          python3 "$SCRIPT" \
+            --id "${{ vars.LOGEN_SHEET_ID }}" \
+            --sheet "InfoPlist" \
+            --first_row 2 \
+            --last_column H \
+            --project "CoffeeShop" \
+            --filename "InfoPlist"
 
       - name: Commit and push if files changed
         run: |

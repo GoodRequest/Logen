@@ -114,7 +114,7 @@ def load_service_account_info():
         sys.exit(1)
 
 
-def fetch_spreadsheet_from_sheets():
+def fetch_spreadsheet_from_sheets(sheet_range):
     import_google_sheets_api(True)
     from google.oauth2 import service_account
 
@@ -130,7 +130,7 @@ def fetch_spreadsheet_from_sheets():
         sheet = service.spreadsheets()
         result = sheet.values().get(
             spreadsheetId=SPREADSHEET_ID,
-            range=RANGE
+            range=sheet_range
         ).execute()
         values = result.get("values", [])
 
@@ -159,6 +159,47 @@ def load_spreadsheet_from_csv(path):
         sys.exit(1)
     return rows
 
+
+def merge_spreadsheets(base_spreadsheet, overlay_spreadsheet):
+    if not overlay_spreadsheet:
+        return base_spreadsheet
+
+    identifier_column_index = get_identifier_column_index(base_spreadsheet)
+    merged_spreadsheet = [base_spreadsheet[0]]
+    overlay_rows_by_key = {}
+    base_keys = set()
+
+    for row in overlay_spreadsheet[1:]:
+        if len(row) <= identifier_column_index:
+            continue
+
+        key = row[identifier_column_index]
+        if not key:
+            continue
+
+        overlay_rows_by_key[key] = row
+
+    for row in base_spreadsheet[1:]:
+        if len(row) <= identifier_column_index:
+            merged_spreadsheet.append(row)
+            continue
+
+        key = row[identifier_column_index]
+        if not key:
+            merged_spreadsheet.append(row)
+            continue
+
+        base_keys.add(key)
+        merged_spreadsheet.append(overlay_rows_by_key.pop(key, row))
+
+    for key, row in overlay_rows_by_key.items():
+        if key in base_keys:
+            continue
+
+        merged_spreadsheet.append(row)
+
+    return merged_spreadsheet
+
 # - Variables
 
 LOCALIZATION_PATH: str = "Resources/Localization"
@@ -167,29 +208,48 @@ SPREADSHEET_ID: str = None
 RANGE: str = None
 PROJECT_NAME: str = None
 CSV_PATH: str = None
+OVERLAY_RANGE: str = None
+OVERLAY_CSV_PATH: str = None
 
 # - Localization generator
+
+def get_identifier_column_index(spreadsheet):
+    header_candidates = ["Identifier", "iOS"]
+
+    for column_name in header_candidates:
+        matches = [header for header in spreadsheet[0] if column_name in header]
+        if matches:
+            return spreadsheet[0].index(matches[0])
+
+    print("error: missing identifier column. Expected a header containing 'Identifier' or 'iOS' ❌")
+    sys.exit(1)
 
 def get_languages(spreadsheet):
     headers = spreadsheet[0]
     languages = []
     for header in headers:
-        if len(header) == 2:
+        if is_language_header(header):
             languages.append(header)
 
     return languages
 
-def generate_strings(spreadsheet, language):
-    ios_column_name = "iOS"
-    ios_column_first_match = [header for header in spreadsheet[0] if ios_column_name in header][0]
-    ios_column_index = spreadsheet[0].index(ios_column_first_match)
+def is_language_header(header):
+    return re.match(r"^[A-Za-z]{2}([_-][A-Za-z]{2})?$", header.strip()) is not None
 
+def lproj_language_code(language):
+    parts = re.split(r"[-_]", language.strip())
+    if len(parts) == 1:
+        return parts[0].lower()
+    return "{}_{}".format(parts[0].lower(), parts[1].upper())
+
+def generate_strings(spreadsheet, language):
+    ios_column_index = get_identifier_column_index(spreadsheet)
     language_column_index = spreadsheet[0].index(language)
 
     list_of_strings = []
     pluralized_rows = []
 
-    for row in spreadsheet:
+    for row in spreadsheet[1:]:
         try:
             if not row[ios_column_index]:
                 continue
@@ -209,15 +269,12 @@ def generate_strings(spreadsheet, language):
     return list_of_strings, pluralized_strings
 
 def generate_special_strings(spreadsheet, language):
-    ios_column_name = "iOS"
-    ios_column_first_match = [header for header in spreadsheet[0] if ios_column_name in header][0]
-    ios_column_index = spreadsheet[0].index(ios_column_first_match)
-
+    ios_column_index = get_identifier_column_index(spreadsheet)
     language_column_index = spreadsheet[0].index(language)
 
     dict_of_special_strings = dict()
 
-    for row in spreadsheet:
+    for row in spreadsheet[1:]:
         try:
             if not row[ios_column_index]:
                 continue
@@ -392,7 +449,7 @@ def prepare_path(language, isPluralizedFile, fileName):
     path = "/{}/{}/{}/{}.{}".format(
         PROJECT_NAME,
         LOCALIZATION_PATH,
-        "{}.lproj".format(language.lower()),
+        "{}.lproj".format(lproj_language_code(language)),
         fileName,
         "stringsdict" if isPluralizedFile else "strings"
     )
@@ -407,11 +464,19 @@ def print_success_message(languages):
     for language in languages:
         print("    - {}".format(language))
 
+
+def build_range(sheet_name, first_row, last_column):
+    start_row = first_row if first_row else "1"
+    return "'{}'!A{}:{}".format(sheet_name, start_row, last_column)
+
+
 def parse_arguments():
     parser = argparse.ArgumentParser()
     parser.add_argument("--csv", required=False, help="Path to a UTF-8 CSV export of the sheet (local mode; no Google API).")
+    parser.add_argument("--overlay_csv", required=False, help="Path to a UTF-8 CSV export with overlay values keyed by identifier.")
     parser.add_argument("--id", required=False)
     parser.add_argument("--sheet", required=False)
+    parser.add_argument("--overlay_sheet", required=False)
     parser.add_argument("--last_column", required=False)
     parser.add_argument("--project", required=True)
 
@@ -427,10 +492,13 @@ def parse_arguments():
     global LOCALIZATION_PATH
     global FILENAME
     global CSV_PATH
+    global OVERLAY_RANGE
+    global OVERLAY_CSV_PATH
 
     PROJECT_NAME = arguments.project
     FILENAME = arguments.filename
     CSV_PATH = arguments.csv
+    OVERLAY_CSV_PATH = arguments.overlay_csv
 
     if arguments.localization_path:
         LOCALIZATION_PATH = arguments.localization_path
@@ -450,18 +518,9 @@ def parse_arguments():
         sys.exit(1)
 
     SPREADSHEET_ID = arguments.id
-
-    if arguments.first_row:
-        RANGE = "'{}'!A{}:{}".format(
-            arguments.sheet,
-            arguments.first_row,
-            arguments.last_column
-        )
-    else:
-        RANGE = "'{}'!A1:{}".format(
-            arguments.sheet,
-            arguments.last_column
-        )
+    RANGE = build_range(arguments.sheet, arguments.first_row, arguments.last_column)
+    if arguments.overlay_sheet:
+        OVERLAY_RANGE = build_range(arguments.overlay_sheet, arguments.first_row, arguments.last_column)
 
     return arguments
 
@@ -471,8 +530,8 @@ def validate_and_resolve_mode():
     plain_raw = os.environ.get(LOGEN_SA_JSON_ENV)
     plain = str(plain_raw).strip() if plain_raw else ""
     sa_set = bool(plain)
-    if CSV_PATH and sa_set:
-        print("error: use either --csv or {}, not both ❌".format(LOGEN_SA_JSON_ENV))
+    if (CSV_PATH or OVERLAY_CSV_PATH) and sa_set:
+        print("error: use CSV inputs or {}, not both ❌".format(LOGEN_SA_JSON_ENV))
         sys.exit(1)
     if not CSV_PATH and not sa_set:
         print(
@@ -486,7 +545,15 @@ def validate_and_resolve_mode():
 def load_spreadsheet():
     if CSV_PATH:
         return load_spreadsheet_from_csv(CSV_PATH)
-    return fetch_spreadsheet_from_sheets()
+    return fetch_spreadsheet_from_sheets(RANGE)
+
+
+def load_overlay_spreadsheet():
+    if OVERLAY_CSV_PATH:
+        return load_spreadsheet_from_csv(OVERLAY_CSV_PATH)
+    if OVERLAY_RANGE:
+        return fetch_spreadsheet_from_sheets(OVERLAY_RANGE)
+    return None
 
 # - Main
 
@@ -497,6 +564,7 @@ if __name__ == "__main__":
     print("ℹ️ Generating localizations...")
 
     spreadsheet = load_spreadsheet()
+    spreadsheet = merge_spreadsheets(spreadsheet, load_overlay_spreadsheet())
     languages = get_languages(spreadsheet)
     for language in languages:
         strings, pluralizedStrings = generate_strings(spreadsheet, language)
