@@ -2,15 +2,27 @@
 #   .github/workflows/regenerate-localizations.yml
 #
 # Prerequisites:
-# - Logen repository is public (or add `token:` to the Logen checkout step).
-# - Add `_logen/` to your app repo's .gitignore (see APP_REPO_DOTGITIGNORE in this folder).
+# - Logen repository is public (or add `token:` to the Logen checkout step), unless you use a
+#   project-local script only (see LOGEN_SCRIPT_PATH below).
+# - If the workflow checks out Logen into `_logen/`, add `_logen/` to your app repo's .gitignore
+#   (see APP_REPO_DOTGITIGNORE in this folder).
 # - Create Actions secret LOGEN_SA_JSON on the app repo (service account JSON).
-# - Replace OWNER/Logen, CoffeeShop, sheet args, and optional ref.
+# - Replace GoodRequest/Logen if needed, CoffeeShop, sheet args, and optional ref.
+#
+# Optional app-local script (same CLI as logen2.py):
+# - Repo variable LOGEN_SCRIPT_PATH — path relative to app repo root, e.g. Scripts/logen2.py
+#   (a fork or wrapper with extra project logic). When set and not under _logen/, the second
+#   checkout is skipped. When unset, defaults to _logen/Logen/logen2.py (Logen checkout runs).
 
 name: Regenerate localizations
 
 on:
   workflow_dispatch:
+    inputs:
+      overlay_sheet:
+        description: Optional overlay tab name for flavour-specific strings
+        required: false
+        default: ""
 
 permissions:
   contents: write
@@ -25,9 +37,10 @@ jobs:
           persist-credentials: true
 
       - name: Check out public Logen
+        if: ${{ vars.LOGEN_SCRIPT_PATH == '' || startsWith(vars.LOGEN_SCRIPT_PATH, '_logen/') }}
         uses: actions/checkout@v4
         with:
-          repository: OWNER/Logen
+          repository: GoodRequest/Logen
           path: _logen
           ref: main
 
@@ -42,14 +55,36 @@ jobs:
       - name: Run Logen
         env:
           LOGEN_SA_JSON: ${{ secrets.LOGEN_SA_JSON }}
+          LOGEN_SCRIPT_PATH: ${{ vars.LOGEN_SCRIPT_PATH }}
+          LOGEN_OVERLAY_SHEET: ${{ inputs.overlay_sheet }}
         working-directory: ${{ github.workspace }}
         run: |
-          python3 _logen/Logen/logen2.py \
+          SCRIPT="${LOGEN_SCRIPT_PATH:-_logen/Logen/logen2.py}"
+          if [ ! -f "$SCRIPT" ]; then
+            echo "error: Logen script not found: $SCRIPT"
+            exit 1
+          fi
+
+          OVERLAY_ARGS=()
+          if [ -n "${LOGEN_OVERLAY_SHEET}" ]; then
+            OVERLAY_ARGS+=(--overlay_sheet "${LOGEN_OVERLAY_SHEET}")
+          fi
+
+          python3 "$SCRIPT" \
             --id "${{ vars.LOGEN_SHEET_ID }}" \
             --sheet "Strings" \
             --first_row 2 \
             --last_column H \
-            --project "CoffeeShop"
+            --project "CoffeeShop" \
+            "${OVERLAY_ARGS[@]}"
+
+          python3 "$SCRIPT" \
+            --id "${{ vars.LOGEN_SHEET_ID }}" \
+            --sheet "InfoPlist" \
+            --first_row 2 \
+            --last_column H \
+            --project "CoffeeShop" \
+            --filename "InfoPlist"
 
       - name: Commit and push if files changed
         run: |
