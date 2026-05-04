@@ -1,4 +1,5 @@
 import unittest
+from unittest import mock
 
 import logen2
 
@@ -64,6 +65,22 @@ class LogenOverlayTests(unittest.TestCase):
         self.assertEqual(logen2.lproj_language_code("en"), "en")
         self.assertEqual(logen2.lproj_language_code("sk_SK"), "sk_SK")
         self.assertEqual(logen2.lproj_language_code("cs-CZ"), "cs_CZ")
+
+    def test_pip_install_google_apis_uses_pinned_versions_without_upgrade(self):
+        with mock.patch("logen2.subprocess.call") as subprocess_call:
+            logen2.pip_install_google_apis()
+
+        subprocess_call.assert_called_once_with(
+            [
+                logen2.sys.executable,
+                "-m",
+                "pip",
+                "install",
+                "google-api-python-client==2.128.0",
+                "google-auth==2.29.0",
+                "google-auth-httplib2==0.2.0",
+            ]
+        )
 
 
 if __name__ == "__main__":

@@ -64,6 +64,11 @@ class LocalizedString:
 
 SCOPE = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
 LOGEN_SA_JSON_ENV = "LOGEN_SA_JSON"
+GOOGLE_API_PIP_SPECS = [
+    "google-api-python-client==2.128.0",
+    "google-auth==2.29.0",
+    "google-auth-httplib2==0.2.0",
+]
 
 HttpError = None
 build = None
@@ -93,10 +98,7 @@ def pip_install_google_apis():
         "-m",
         "pip",
         "install",
-        "--upgrade",
-        "google-api-python-client",
-        "google-auth",
-        "google-auth-httplib2",
+        *GOOGLE_API_PIP_SPECS,
     ]
     subprocess.call(PIP_INSTALL_LIBS)
 
